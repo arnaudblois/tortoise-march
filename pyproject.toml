@@ -1,0 +1,84 @@
+[tool.poetry]
+name = "tortoise-march"
+version = "0.1.0"
+description = "A Django-style migration system for Tortoise ORM"
+authors = ["Arnaud Blois <hi@arnaudblois.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{ include = "tortoisemarch", from = "src" }]
+homepage = "https://github.com/arnaudblois/tortoise-march"
+repository = "https://github.com/arnaudblois/tortoise-march"
+
+[tool.poetry.scripts]
+tortoisemarch = "tortoisemarch.cli:main"
+
+[tool.poetry.dependencies]
+python = ">=3.12"
+tortoise-orm = ">=0.25.1,<0.26.0"
+asyncpg = ">=0.30.0,<0.31.0"
+black = "^25.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.1"
+pytest-asyncio = "^1.1.0"
+ruff = "^0.14.2"
+isort = "^7.0.0"
+pre-commit = "^4.2.0"
+sphinx = "^8.2.3"
+sphinx-autodoc2 = "^0.5.0"
+myst-parser = "^4.0.1"
+furo = "^2025.7.19"
+ipython = "^9.4.0"
+mkdocs = "^1.6.1"
+mkdocs-material = "^9.6.19"
+mkdocstrings = {extras = ["python"], version = "^0.30.0"}
+mkdocs-autorefs = "^1.4.3"
+mkdocs-include-markdown-plugin = "^7.1.7"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+skip = [
+    ".local",
+    ".venv",
+    "migrations",
+]
+
+[tool.black]
+exclude = "/(\n    \\.local\n  | \\.venv\n  | migrations\n)/\n"
+
+[tool.ruff]
+target-version = "py313"
+exclude = [".venv"]
+
+[tool.ruff.lint]
+select = [
+    "ALL",
+]
+ignore = [
+    "D105",
+    "D106",
+    "D203",
+    "D206",
+    "D213",
+    "ANN",
+    "S101",
+    "ARG001",
+    "TC001",
+    "TC002",
+]
+
+[tool.pytest.ini_options]
+addopts = "-s --pdbcls=IPython.terminal.debugger:TerminalPdb"
+python_files = [
+    "tests.py",
+    "test_*.py",
+    "*_tests.py",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"

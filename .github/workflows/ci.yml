@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "**"]
+  pull_request:
+  release:
+    types: [published]
+
+permissions:
+  contents: write # needed for mkdocs gh-deploy
+  id-token: write # keep if you later switch to OIDC for PyPI
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        ports:
+          - 5445:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5445/testdb
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Python + Poetry + deps
+        uses: ./.github/actions/setup-poetry-env
+        with:
+          python-version: "3.13"
+          with-groups: "dev"
+
+      - name: Run tests
+        run: poetry run pytest -q
+
+  docs_build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Python + Poetry + deps (incl. mkdocs)
+        uses: ./.github/actions/setup-poetry-env
+        with:
+          python-version: "3.13"
+          with-groups: "dev"
+
+      - name: Build docs (mkdocs)
+        run: poetry run mkdocs build --strict
+
+      - name: Upload site artifact (PRs only)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mkdocs-site
+          path: site
+
+  docs_deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: docs_build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Python + Poetry + deps (incl. mkdocs)
+        uses: ./.github/actions/setup-poetry-env
+        with:
+          python-version: "3.13"
+          with-groups: "dev"
+
+      - name: Deploy docs to gh-pages
+        env:
+          GIT_AUTHOR_NAME: github-actions
+          GIT_AUTHOR_EMAIL: github-actions@github.com
+          GIT_COMMITTER_NAME: github-actions
+          GIT_COMMITTER_EMAIL: github-actions@github.com
+        run: |
+          poetry run mkdocs gh-deploy \
+            --force \
+            --strict \
+            --remote-name origin \
+            --message "docs: deploy ${GITHUB_SHA}"
+
+  publish_testpypi:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [test, docs_deploy]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Python + Poetry + deps
+        uses: ./.github/actions/setup-poetry-env
+        with:
+          python-version: "3.13"
+          with-groups: "dev"
+
+      - name: Set constant dev version for TestPyPI
+        run: |
+          BASE_VERSION=$(poetry version -s | sed 's/\.dev.*//')
+          poetry version "${BASE_VERSION}.dev0"
+
+      - name: Build wheel/sdist
+        run: poetry build
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+          packages-dir: dist
+
+  publish_pypi:
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: [test, docs_build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Setup Python + Poetry + deps
+        uses: ./.github/actions/setup-poetry-env
+        with:
+          python-version: "3.13"
+          with-groups: "dev"
+
+      - name: Build wheel/sdist
+        run: poetry build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist

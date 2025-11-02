@@ -1,0 +1,17 @@
+site_name: Tortoise March
+theme:
+  name: material
+
+plugins:
+  - include-markdown
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+  - autorefs
+
+nav:
+  - Home: index.md
+  - API: api.md

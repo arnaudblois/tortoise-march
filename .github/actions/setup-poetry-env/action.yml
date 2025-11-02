@@ -1,0 +1,43 @@
+name: "Setup Poetry environment"
+description: "Install Python, install Poetry (official installer), restore venv cache, and install dependencies"
+
+inputs:
+  python-version:
+    description: "Python version to use"
+    required: false
+    default: "3.13"
+  with-groups:
+    description: "Poetry groups to install (passed to --with)"
+    required: false
+    default: "dev"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Poetry (official installer)
+      shell: bash
+      env:
+        POETRY_HOME: ${{ runner.temp }}/poetry
+      run: |
+        curl -sSL https://install.python-poetry.org/ | python -
+        echo "${POETRY_HOME}/bin" >> "$GITHUB_PATH"
+
+    - name: Cache project venv
+      uses: actions/cache@v4
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+        restore-keys: |
+          venv-${{ runner.os }}-
+
+    - name: Install dependencies with Poetry
+      shell: bash
+      env:
+        POETRY_VIRTUALENVS_IN_PROJECT: "true"
+      run: |
+        poetry install --with ${{ inputs.with-groups }}
