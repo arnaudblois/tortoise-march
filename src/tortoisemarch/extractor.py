@@ -9,12 +9,49 @@ captures foreign-key metadata so we can generate correct FK SQL.
 import inspect
 from typing import Any
 
-from tortoise import Model, Tortoise
+from tortoise import Model, Tortoise, fields
+from tortoise.fields.data import CharEnumFieldInstance, IntEnumFieldInstance
 
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 
 # ------------------------------- helpers --------------------------------
+
+CANONICAL_FIELD_TYPES: list[tuple[str, type]] = [
+    # Integers
+    ("SmallIntField", fields.SmallIntField),
+    ("IntField", fields.IntField),
+    ("BigIntField", fields.BigIntField),
+    # Booleans
+    ("BooleanField", fields.BooleanField),
+    # Character/text
+    ("CharField", fields.CharField),
+    ("TextField", fields.TextField),
+    # Binary / bytes
+    ("BinaryField", fields.BinaryField),
+    # Numbers
+    ("FloatField", fields.FloatField),
+    ("DecimalField", fields.DecimalField),
+    # UUID
+    ("UUIDField", fields.UUIDField),
+    # Date / time
+    ("DatetimeField", fields.DatetimeField),
+    ("DateField", fields.DateField),
+    ("TimeField", fields.TimeField),
+    ("TimedeltaField", fields.TimeDeltaField),
+    # JSON
+    ("JSONField", fields.JSONField),
+    # Enums, we use *instance* classes, not the top-level factory
+    ("IntEnumField", IntEnumFieldInstance),
+    ("CharEnumField", CharEnumFieldInstance),
+]
+
+RELATIONAL_SENTINELS = {
+    "ForeignKeyFieldInstance",
+    "OneToOneFieldInstance",
+    "ManyToManyFieldInstance",
+    "BackwardFKRelation",
+}
 
 
 def _safe_default(value: Any) -> Any:
@@ -29,8 +66,22 @@ def _safe_default(value: Any) -> Any:
 
 
 def _field_type_name(field: Any) -> str:
-    """Return a stable field type name (e.g. 'UUIDField', 'CharField')."""
-    return field.__class__.__name__
+    """Return a stable field type name (e.g. 'UUIDField', 'CharField').
+
+    It is more difficult than simply returning field.__class__.__name__
+    as it is perfectly possible for the user to have subclassed native
+    Tortoise fields.
+    """
+    raw_name = field.__class__.__name__
+
+    if raw_name in RELATIONAL_SENTINELS:
+        return raw_name
+
+    for canonical_name, field_type in CANONICAL_FIELD_TYPES:
+        if isinstance(field, field_type):
+            return canonical_name
+
+    return raw_name  # custom/unsupported-type fallback
 
 
 def _is_relational(field: Any) -> bool:
@@ -115,7 +166,8 @@ def _resolve_related_bits(
 def _infer_referenced_type(field: Any) -> str | None:
     """Return the referenced PK abstract type name for FK targets.
 
-    Allowed types: 'SmallIntField', 'IntField', 'BigIntField', 'UUIDField'.
+    Allowed types: SmallIntField, IntField, BigIntField, UUIDField
+        and CharField.
 
     Returns:
         The abstract type of the referenced PK (string) or None if not resolvable.
@@ -138,16 +190,25 @@ def _infer_referenced_type(field: Any) -> str | None:
     if pk_field is None:
         return None
 
+    reference_fields = (
+        ("SmallIntField", fields.SmallIntField),
+        ("BigIntField", fields.BigIntField),
+        ("IntField", fields.IntField),
+        ("UUIDField", fields.UUIDField),
+        ("CharField", fields.CharField),
+    )
+    for name, ref_field in reference_fields:
+        if isinstance(pk_field, ref_field):
+            return name
+
+    # Fallback: keep the informative error message with the real class name
     tname = _field_type_name(pk_field)
-    allowed = {"SmallIntField", "IntField", "BigIntField", "UUIDField"}
-    if tname not in allowed:
-        model_label = f"{related_model.__module__}.{related_model.__name__}"
-        msg = (
-            f"Unsupported FK target type '{tname}' on {model_label}.{to_field}. "
-            "Only integer-based fields or UUIDField can be referenced."
-        )
-        raise InvalidMigrationError(msg)
-    return tname
+    model_label = f"{related_model.__module__}.{related_model.__name__}"
+    msg = (
+        f"Unsupported FK target type '{tname}' on {model_label}.{to_field}. "
+        "Only integer-based fields or UUIDField can be referenced."
+    )
+    raise InvalidMigrationError(msg)
 
 
 # ------------------------------ extractors ------------------------------

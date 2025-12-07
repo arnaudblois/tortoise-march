@@ -8,6 +8,18 @@ from tortoisemarch.extractor import extract_project_state
 from tortoisemarch.model_state import ProjectState
 
 
+class PrimaryKeyField(fields.UUIDField):
+    """Shorthand field for primary key.
+
+    This also tests that inherited FK fields are correctly handled.
+    """
+
+    def __init__(self, **kwargs):
+        """Set primary_key attribute to True by default."""
+        kwargs.setdefault("primary_key", True)
+        super().__init__(**kwargs)
+
+
 class Author(Model):
     """Test model of an Author."""
 
@@ -22,7 +34,7 @@ class Author(Model):
 class Book(Model):
     """Test model for a Book."""
 
-    id = fields.UUIDField(primary_key=True)
+    id = PrimaryKeyField()
     title = fields.CharField(max_length=200)
     author = fields.ForeignKeyField("models.Author", related_name="books")
 
@@ -37,7 +49,6 @@ async def test_extract_project_state_with_fk():
         db_url="sqlite://:memory:",
         modules={"models": [__name__]},
     )
-
     state = extract_project_state(apps=Tortoise.apps)
     assert isinstance(state, ProjectState)
     assert set(state.model_states.keys()) == {"Author", "Book"}

@@ -14,24 +14,23 @@ tortoisemarch = "tortoisemarch.cli:main"
 
 [tool.poetry.dependencies]
 python = ">=3.12"
-tortoise-orm = ">=0.25.1,<0.26.0"
-asyncpg = ">=0.30.0,<0.31.0"
+tortoise-orm = "^0.25.1"
+asyncpg = "^0.31.0"
 black = "^25.1.0"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.4.1"
+pytest = "^9.0.1"
 pytest-asyncio = "^1.1.0"
 ruff = "^0.14.2"
 isort = "^7.0.0"
 pre-commit = "^4.2.0"
-sphinx = "^8.2.3"
 sphinx-autodoc2 = "^0.5.0"
 myst-parser = "^4.0.1"
 furo = "^2025.7.19"
 ipython = "^9.4.0"
 mkdocs = "^1.6.1"
 mkdocs-material = "^9.6.19"
-mkdocstrings = {extras = ["python"], version = "^0.30.0"}
+mkdocstrings = {extras = ["python"], version = "^1.0.0"}
 mkdocs-autorefs = "^1.4.3"
 mkdocs-include-markdown-plugin = "^7.1.7"
 
