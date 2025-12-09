@@ -13,7 +13,7 @@ from tortoisemarch.makemigrations import makemigrations
 
 
 @pytest.mark.asyncio
-async def test_makemigrations_integration(tmp_path: Path):
+async def test_makemigrations_integration(tmp_path: Path, snapshot):
     """Integration test simulating a sequence of model evolutions.
 
     1) Create Book model.
@@ -56,16 +56,20 @@ async def test_makemigrations_integration(tmp_path: Path):
             f for f in migrations_dir.glob("*.py") if f.name != "__init__.py"
         )
         assert files, "No migration files found"
-        # We remove all spaces for ease of testing.
-        return files[-1].read_text().replace("\n", "").replace(" ", "")
+        return files[-1].read_text()
 
     # --- Step 1: Book model ---------------------------------------------------
     model_code_1 = textwrap.dedent(
         """
         from tortoise import fields, models
 
+        class PrimaryKeyField(fields.UUIDField):
+            def __init__(self, **kwargs):
+                kwargs.setdefault("primary_key", True)
+                super().__init__(**kwargs)
+
         class Book(models.Model):
-            id = fields.IntField(primary_key=True)
+            id = PrimaryKeyField()
             title = fields.CharField(max_length=100)
         """,
     )
@@ -76,7 +80,11 @@ async def test_makemigrations_integration(tmp_path: Path):
     assert all_py_names == {"__init__.py", "0001_initial.py"}
 
     mig_text = newest_migration_text()
-    assert 'CreateModel(name="Book"' in mig_text
+    # We remove the first line to avoid having to deal with the creation
+    # datetime in the initial docstring.
+    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert 'CreateModel(name="Book"' in mig_text.replace("\n", "").replace(" ", "")
+    assert "PrinaryKeyField" not in mig_text
     assert "fields=" in mig_text
 
     # --- Step 2: Add Author model --------------------------------------------
@@ -84,8 +92,13 @@ async def test_makemigrations_integration(tmp_path: Path):
         """
         from tortoise import fields, models
 
+        class PrimaryKeyField(fields.UUIDField):
+            def __init__(self, **kwargs):
+                kwargs.setdefault("primary_key", True)
+                super().__init__(**kwargs)
+
         class Book(models.Model):
-            id = fields.IntField(primary_key=True)
+            id = PrimaryKeyField()
             title = fields.CharField(max_length=100)
 
         class Author(models.Model):
@@ -105,15 +118,21 @@ async def test_makemigrations_integration(tmp_path: Path):
     }
 
     mig_text = newest_migration_text()
-    assert 'CreateModel(name="Author"' in mig_text
+    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert 'CreateModel(name="Author"' in mig_text.replace("\n", "").replace(" ", "")
 
     # --- Step 3: Add 'active' to Author --------------------------------------
     model_code_3 = textwrap.dedent(
         """
         from tortoise import fields, models
 
+        class PrimaryKeyField(fields.UUIDField):
+            def __init__(self, **kwargs):
+                kwargs.setdefault("primary_key", True)
+                super().__init__(**kwargs)
+
         class Book(models.Model):
-            id = fields.IntField(primary_key=True)
+            id = PrimaryKeyField()
             title = fields.CharField(max_length=100)
 
         class Author(models.Model):
@@ -136,7 +155,8 @@ async def test_makemigrations_integration(tmp_path: Path):
 
     mig_text = newest_migration_text()
 
+    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
     # We expect an AddField op targeting Author.active
-    assert "AddField(" in mig_text
+    assert "AddField(" in mig_text.replace("\n", "").replace(" ", "")
     assert 'model_name="Author"' in mig_text
     assert 'field_name="active"' in mig_text

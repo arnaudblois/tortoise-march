@@ -61,3 +61,7 @@ class RecorderError(TortoiseMarchError):
 
 class DiscoveryError(TortoiseMarchError):
     """Failed to discover or import models/migrations/modules."""
+
+
+class MigrationConnectionError(RuntimeError):
+    """Raised when the migration runner cannot connect to the database."""

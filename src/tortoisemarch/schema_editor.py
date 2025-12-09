@@ -28,6 +28,20 @@ class SchemaEditor(ABC):
 
     # ------------ EXECUTION API (runs against the DB) ------------
 
+    async def _execute(self, conn: Any, sql: str) -> None:
+        """Execute SQL on either a Tortoise client or a raw asyncpg connection."""
+        if hasattr(conn, "execute_script"):
+            # Tortoise BaseDBAsyncClient
+            await conn.execute_script(sql)
+        elif hasattr(conn, "execute"):
+            # asyncpg.Connection
+            await conn.execute(sql)
+        else:
+            msg = (
+                f"Connection object {conn!r} has neither 'execute_script' nor 'execute'"
+            )
+            raise TypeError(msg)
+
     @abstractmethod
     async def create_model(
         self,
@@ -335,11 +349,13 @@ class PostgresSchemaEditor(SchemaEditor):
         fields: list[tuple[str, str, dict[str, Any]]],
     ) -> None:
         """Execute the SQL to create a model."""
-        await conn.execute_script(self.sql_create_model(db_table, fields))
+        sql = self.sql_create_model(db_table, fields)
+        await self._execute(conn, sql)
 
     async def drop_model(self, conn: BaseDBAsyncClient, db_table: str) -> None:
         """Execute the SQL to drop a model."""
-        await conn.execute_script(self.sql_drop_model(db_table))
+        sql = self.sql_drop_model(db_table)
+        await self._execute(conn, sql)
 
     async def add_field(
         self,
@@ -350,9 +366,8 @@ class PostgresSchemaEditor(SchemaEditor):
         options: dict[str, Any],
     ) -> None:
         """Execute the SQL to add a field."""
-        await conn.execute_script(
-            self.sql_add_field(db_table, field_name, field_type, options),
-        )
+        sql = self.sql_add_field(db_table, field_name, field_type, options)
+        await self._execute(conn, sql)
 
     async def remove_field(
         self,
@@ -361,7 +376,8 @@ class PostgresSchemaEditor(SchemaEditor):
         field_name: str,
     ) -> None:
         """Execute the SQL to remove a field."""
-        await conn.execute_script(self.sql_remove_field(db_table, field_name))
+        sql = self.sql_remove_field(db_table, field_name)
+        await self._execute(conn, sql)
 
     async def alter_field(  # noqa: PLR0913
         self,
@@ -380,7 +396,7 @@ class PostgresSchemaEditor(SchemaEditor):
             new_options,
             new_name,
         ):
-            await conn.execute_script(stmt)
+            await self._execute(conn, stmt)
 
     async def rename_field(
         self,
@@ -390,7 +406,8 @@ class PostgresSchemaEditor(SchemaEditor):
         new_name: str,
     ) -> None:
         """Execute the SQL to rename a column."""
-        await conn.execute_script(self.sql_rename_field(db_table, old_name, new_name))
+        sql = self.sql_rename_field(db_table, old_name, new_name)
+        await self._execute(conn, sql)
 
     # ------------------------- type mapping -----------------------------
 

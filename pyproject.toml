@@ -33,6 +33,7 @@ mkdocs-material = "^9.6.19"
 mkdocstrings = {extras = ["python"], version = "^1.0.0"}
 mkdocs-autorefs = "^1.4.3"
 mkdocs-include-markdown-plugin = "^7.1.7"
+syrupy = "^5.0.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]

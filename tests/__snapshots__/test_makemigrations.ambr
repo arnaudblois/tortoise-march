@@ -1,0 +1,173 @@
+# serializer version: 1
+# name: test_makemigrations_integration
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import CreateModel
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          CreateModel(
+              name="Book",
+              db_table="book",
+              fields=[
+                  (
+                      "id",
+                      "UUIDField",
+                      {
+                          "null": False,
+                          "default": "callable",
+                          "unique": True,
+                          "index": True,
+                          "primary_key": True,
+                          "db_column": None,
+                          "max_length": None,
+                          "max_digits": None,
+                          "decimal_places": None,
+                          "auto_now": False,
+                          "auto_now_add": False,
+                          "related_table": None,
+                          "related_model": None,
+                          "to_field": None,
+                          "on_delete": None,
+                          "referenced_type": None,
+                      },
+                  ),
+                  (
+                      "title",
+                      "CharField",
+                      {
+                          "null": False,
+                          "default": None,
+                          "unique": False,
+                          "index": False,
+                          "primary_key": False,
+                          "db_column": None,
+                          "max_length": 100,
+                          "max_digits": None,
+                          "decimal_places": None,
+                          "auto_now": False,
+                          "auto_now_add": False,
+                          "related_table": None,
+                          "related_model": None,
+                          "to_field": None,
+                          "on_delete": None,
+                          "referenced_type": None,
+                      },
+                  ),
+              ],
+          ),
+      ]
+  
+  '''
+# ---
+# name: test_makemigrations_integration.1
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import CreateModel
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          CreateModel(
+              name="Author",
+              db_table="author",
+              fields=[
+                  (
+                      "id",
+                      "IntField",
+                      {
+                          "null": False,
+                          "default": None,
+                          "unique": True,
+                          "index": True,
+                          "primary_key": True,
+                          "db_column": None,
+                          "max_length": None,
+                          "max_digits": None,
+                          "decimal_places": None,
+                          "auto_now": False,
+                          "auto_now_add": False,
+                          "related_table": None,
+                          "related_model": None,
+                          "to_field": None,
+                          "on_delete": None,
+                          "referenced_type": None,
+                      },
+                  ),
+                  (
+                      "name",
+                      "CharField",
+                      {
+                          "null": False,
+                          "default": None,
+                          "unique": False,
+                          "index": False,
+                          "primary_key": False,
+                          "db_column": None,
+                          "max_length": 100,
+                          "max_digits": None,
+                          "decimal_places": None,
+                          "auto_now": False,
+                          "auto_now_add": False,
+                          "related_table": None,
+                          "related_model": None,
+                          "to_field": None,
+                          "on_delete": None,
+                          "referenced_type": None,
+                      },
+                  ),
+              ],
+          ),
+      ]
+  
+  '''
+# ---
+# name: test_makemigrations_integration.2
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import AddField
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          AddField(
+              model_name="Author",
+              db_table="author",
+              field_name="active",
+              field_type="BooleanField",
+              options={
+                  "null": False,
+                  "default": True,
+                  "unique": False,
+                  "index": False,
+                  "primary_key": False,
+                  "db_column": None,
+                  "max_length": None,
+                  "max_digits": None,
+                  "decimal_places": None,
+                  "auto_now": False,
+                  "auto_now_add": False,
+                  "related_table": None,
+                  "related_model": None,
+                  "to_field": None,
+                  "on_delete": None,
+                  "referenced_type": None,
+              },
+          ),
+      ]
+  
+  '''
+# ---
