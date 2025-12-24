@@ -34,7 +34,7 @@ def _auto_name(operations: list, number: int) -> str:  # noqa: C901
         elif cname == "AlterField":
             parts.append(f"alter_{op.model_name.lower()}_{op.field_name.lower()}")
         elif cname == "RenameField":
-            parts.append(f"rename_{op.model_name.lower()}_{op.field_name.lower()}")
+            parts.append(f"rename_{op.model_name.lower()}_{op.old_name.lower()}")
         elif cname == "RunPython":
             parts.append("runpython")
     if len(operations) > 2:  # noqa: PLR2004

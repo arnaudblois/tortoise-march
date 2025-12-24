@@ -9,7 +9,32 @@ from pathlib import Path
 import pytest
 from tortoise import Tortoise
 
+from tortoisemarch import makemigrations as mm
 from tortoisemarch.makemigrations import makemigrations
+
+
+def newest_migration_text(migrations_dir) -> str:
+    """Return the content of the latest migration created."""
+    files = sorted(f for f in migrations_dir.glob("*.py") if f.name != "__init__.py")
+    assert files, "No migration files found"
+    return files[-1].read_text()
+
+
+async def run_makemigrations(migrations_dir) -> None:
+    """Ensure (re)import of models for Tortoise before calling makemigrations."""
+    if "models" in sys.modules:
+        importlib.reload(sys.modules["models"])
+    else:
+        importlib.import_module("models")
+
+    await Tortoise._reset_apps()  # noqa: SLF001
+    tortoise_orm = {
+        "connections": {
+            "default": "postgres://postgres:test@localhost:5445/testdb",
+        },
+        "apps": {"models": {"models": ["models"], "default_connection": "default"}},
+    }
+    await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
 
 
 @pytest.mark.asyncio
@@ -35,29 +60,6 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
     def write_models(code: str) -> None:
         (models_dir / "__init__.py").write_text(code)
 
-    async def run_makemigrations() -> None:
-        # Ensure (re)import of models for Tortoise to pick them up
-        if "models" in sys.modules:
-            importlib.reload(sys.modules["models"])
-        else:
-            importlib.import_module("models")
-
-        await Tortoise._reset_apps()  # noqa: SLF001
-        tortoise_orm = {
-            "connections": {
-                "default": "postgres://postgres:test@localhost:5445/testdb",
-            },
-            "apps": {"models": {"models": ["models"], "default_connection": "default"}},
-        }
-        await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
-
-    def newest_migration_text() -> str:
-        files = sorted(
-            f for f in migrations_dir.glob("*.py") if f.name != "__init__.py"
-        )
-        assert files, "No migration files found"
-        return files[-1].read_text()
-
     # --- Step 1: Book model ---------------------------------------------------
     model_code_1 = textwrap.dedent(
         """
@@ -74,12 +76,12 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
         """,
     )
     write_models(model_code_1)
-    await run_makemigrations()
+    await run_makemigrations(migrations_dir)
 
     all_py_names = {str(x).split("/")[-1] for x in migrations_dir.glob("*.py")}
     assert all_py_names == {"__init__.py", "0001_initial.py"}
 
-    mig_text = newest_migration_text()
+    mig_text = newest_migration_text(migrations_dir)
     # We remove the first line to avoid having to deal with the creation
     # datetime in the initial docstring.
     assert "\n".join(mig_text.split("\n")[1:]) == snapshot
@@ -108,7 +110,7 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
     )
     write_models(model_code_2)
     await asyncio.sleep(0)  # yield once; not strictly necessary but harmless
-    await run_makemigrations()
+    await run_makemigrations(migrations_dir)
 
     all_py_names = {str(x).split("/")[-1] for x in migrations_dir.glob("*.py")}
     assert all_py_names == {
@@ -117,7 +119,7 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
         "0002_create_author.py",
     }
 
-    mig_text = newest_migration_text()
+    mig_text = newest_migration_text(migrations_dir)
     assert "\n".join(mig_text.split("\n")[1:]) == snapshot
     assert 'CreateModel(name="Author"' in mig_text.replace("\n", "").replace(" ", "")
 
@@ -143,7 +145,7 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
     )
     write_models(model_code_3)
     await asyncio.sleep(0)
-    await run_makemigrations()
+    await run_makemigrations(migrations_dir)
 
     all_py_names = {str(x).split("/")[-1] for x in migrations_dir.glob("*.py")}
     assert all_py_names == {
@@ -153,10 +155,93 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
         "0003_add_author_active.py",
     }
 
-    mig_text = newest_migration_text()
+    mig_text = newest_migration_text(migrations_dir)
 
     assert "\n".join(mig_text.split("\n")[1:]) == snapshot
     # We expect an AddField op targeting Author.active
     assert "AddField(" in mig_text.replace("\n", "").replace(" ", "")
     assert 'model_name="Author"' in mig_text
     assert 'field_name="active"' in mig_text
+
+
+@pytest.mark.asyncio
+async def test_makemigrations_emits_renamefield_for_manual_rename(
+    tmp_path,
+    monkeypatch,
+    snapshot,
+):
+    """Test makemigrations with a field rename."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    def write_models(code: str):
+        (models_dir / "__init__.py").write_text(textwrap.dedent(code))
+        # avoid stale bytecode reuse
+        pycache = models_dir / "__pycache__"
+        if pycache.exists():
+            for f in pycache.glob("__init__.*.pyc"):
+                f.unlink()
+
+        if "models" in sys.modules:
+            del sys.modules["models"]
+
+    # Step 1: initial model with `title`
+    write_models(
+        """
+        from uuid import uuid4
+        from tortoise import fields, models
+
+        class Book(models.Model):
+            id = fields.UUIDField(primary_key=True, default=uuid4)
+            title = fields.CharField(max_length=200)
+        """,
+    )
+    await run_makemigrations(migrations_dir)
+
+    # Step 2: rename field `title` -> `name` (same type/options)
+    write_models(
+        """
+        from uuid import uuid4
+        from tortoise import fields, models
+
+        class Book(models.Model):
+            id = fields.UUIDField(primary_key=True, default=uuid4)
+            name = fields.CharField(max_length=200)
+        """,
+    )
+
+    # Always accept the suggested rename
+    monkeypatch.setattr(mm, "_safe_input", lambda *_, **__: True)
+
+    await run_makemigrations(migrations_dir)
+    mig_text = newest_migration_text(migrations_dir)
+    assert "RenameField" in mig_text
+    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+
+    # Step 3: rename field `title` -> `name` (same type/options)
+    write_models(
+        """
+        from uuid import uuid4
+        from tortoise import fields, models
+
+        class Book(models.Model):
+            id = fields.UUIDField(primary_key=True, default=uuid4)
+            another_field = fields.CharField(max_length=200)
+        """,
+    )
+
+    # Reject the suggested rename, and indicate there is no match
+    monkeypatch.setattr(mm, "_safe_input", lambda *_, **__: False)
+    monkeypatch.setattr(mm, "_input_int", lambda *_, **__: 0)
+
+    await run_makemigrations(migrations_dir)
+    mig_text = newest_migration_text(migrations_dir)
+    assert "AddField" in mig_text
+    assert "RemoveField" in mig_text
+    assert "\n".join(mig_text.split("\n")[1:]) == snapshot

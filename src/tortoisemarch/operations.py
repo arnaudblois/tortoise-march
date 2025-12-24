@@ -6,10 +6,16 @@ are delegated to the active `SchemaEditor` (e.g., Postgres).
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
+
+
+def _lc(name: str) -> str:
+    """Normalize a field name key for field_states."""
+    return name.lower()
 
 
 class Operation(ABC):
@@ -69,11 +75,11 @@ class CreateModel(Operation):
     @classmethod
     def from_model_state(cls, model_state: ModelState) -> "CreateModel":
         """Build a CreateModel operation from a ModelState."""
-        fields = [
-            (fs.name, fs.field_type, fs.options)
+        # Take a *snapshot* of current fields (no shared dicts).
+        fields: list[tuple[str, str, dict[str, Any]]] = [
+            (fs.name, fs.field_type, dict(fs.options))
             for fs in model_state.field_states.values()
         ]
-
         return cls(
             name=model_state.name,
             db_table=model_state.db_table,
@@ -82,17 +88,18 @@ class CreateModel(Operation):
 
     def mutate_state(self, state: ProjectState) -> None:
         """Add the model and its fields to the in-memory state."""
+        field_states: dict[str, FieldState] = {}
+        for fname, ftype, opts in self.fields:
+            field_states[_lc(fname)] = FieldState(
+                name=fname,
+                field_type=ftype,
+                **dict(opts),  # shallow copy; values are primitives
+            )
+
         state.model_states[self.name] = ModelState(
             name=self.name,
             db_table=self.db_table or self.name.lower(),
-            field_states={
-                fname.lower(): FieldState(
-                    name=fname,
-                    field_type=ftype,
-                    **opts,
-                )
-                for (fname, ftype, opts) in self.fields
-            },
+            field_states=field_states,
         )
 
     def to_code(self) -> str:
@@ -180,10 +187,10 @@ class AddField(Operation):
     def mutate_state(self, state: ProjectState) -> None:
         """Add/define the field in the in-memory state."""
         model = state.model_states[self.model_name]
-        model.field_states[self.field_name.lower()] = FieldState(
+        model.field_states[_lc(self.field_name)] = FieldState(
             name=self.field_name,
             field_type=self.field_type,
-            **self.options,  # include pk, lengths, FK bits, etc.
+            **dict(self.options),
         )
 
     def to_code(self) -> str:
@@ -213,7 +220,7 @@ class RemoveField(Operation):
         await schema_editor.remove_field(conn, self.db_table, self.field_name)
 
     async def unapply(self, conn, schema_editor) -> None:
-        """Rais an exception as this is irreversible."""
+        """Raise an exception as this is irreversible."""
         _ = conn, schema_editor
         msg = "RemoveField cannot be reversed."
         raise RuntimeError(msg)
@@ -226,7 +233,7 @@ class RemoveField(Operation):
     def mutate_state(self, state: ProjectState) -> None:
         """Remove the field from the in-memory state."""
         model = state.model_states[self.model_name]
-        model.field_states.pop(self.field_name, None)
+        model.field_states.pop(_lc(self.field_name), None)
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
@@ -288,10 +295,14 @@ class AlterField(Operation):
         """Update the field's state with new options and handle rename."""
         model = state.model_states[self.model_name]
 
-        src_name = self.field_name
+        src_key = _lc(self.field_name)
         dst_name = self.new_name or self.field_name
+        dst_key = _lc(dst_name)
 
-        prev = model.field_states.get(src_name)
+        prev = model.field_states.get(src_key)
+
+        # Determine final field_type: prefer explicit type, then previous,
+        #   then old_options, then a safe default.
         new_type = (
             self.new_options.get("type")
             or (prev.field_type if prev else None)
@@ -299,16 +310,19 @@ class AlterField(Operation):
             or "TextField"
         )
 
+        # Strip internal 'type' key from options when building FieldState.
+        clean_new_opts = {k: v for k, v in self.new_options.items() if k != "type"}
+
         new_fs = FieldState(
             name=dst_name,
             field_type=new_type,
-            **{k: v for k, v in self.new_options.items() if k != "type"},
+            **clean_new_opts,
         )
 
-        if self.new_name and src_name in model.field_states:
-            model.field_states.pop(src_name)
+        if self.new_name and src_key in model.field_states:
+            model.field_states.pop(src_key)
 
-        model.field_states[dst_name.lower()] = new_fs
+        model.field_states[dst_key] = new_fs
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
@@ -369,11 +383,13 @@ class RenameField(Operation):
     def mutate_state(self, state: ProjectState) -> None:
         """Rename the field inside the in-memory state."""
         model = state.model_states[self.model_name]
-        fs = model.field_states.pop(self.old_name)
-        model.field_states[self.new_name.lower()] = FieldState(
+        old_key = _lc(self.old_name)
+        fs = model.field_states.pop(old_key)
+        new_key = _lc(self.new_name)
+        model.field_states[new_key] = FieldState(
             name=self.new_name,
             field_type=fs.field_type,
-            **fs.options,
+            **dict(fs.options),
         )
 
     def to_code(self) -> str:
@@ -383,3 +399,57 @@ class RenameField(Operation):
             f"db_table={self.db_table!r}, old_name={self.old_name!r}, "
             f"new_name={self.new_name!r})"
         )
+
+
+@dataclass
+class RunPython(Operation):
+    """Execute arbitrary Python code during a migration (data-only).
+
+    The callable signature is:
+
+        async def forwards(conn, schema_editor): ...
+
+    or a synchronous function with the same arguments. It may import models and
+    use the Tortoise ORM as long as the caller has initialised it.
+    """
+
+    func: Callable[[Any, Any], Awaitable[None] | None]
+    reverse_func: Callable[[Any, Any], Awaitable[None] | None] | None = None
+
+    async def apply(self, conn, schema_editor) -> None:
+        """Run the forwards callable (sync or async)."""
+        result = self.func(conn, schema_editor)
+        if hasattr(result, "__await__"):
+            await result  # async forwards()
+        # if sync, it already ran
+
+    async def unapply(self, conn, schema_editor) -> None:
+        """Run the reverse callable if provided, else refuse to reverse."""
+        if self.reverse_func is None:
+            msg = "RunPython operation has no reverse callable"
+            raise RuntimeError(msg)
+
+        result = self.reverse_func(conn, schema_editor)
+        if hasattr(result, "__await__"):
+            await result
+
+    def mutate_state(self, state: ProjectState) -> None:
+        """Do nothing as schema state is unchanged."""
+        _ = state  # no-op
+
+    async def to_sql(self, conn, schema_editor) -> list[str]:
+        """RunPython is a data-only operation, so it emits no SQL."""
+        _ = conn, schema_editor
+        return []
+
+    def to_code(self) -> str:
+        """Return a best-effort code repr for this operation.
+
+        In practice, hand-written migrations will usually write
+        `RunPython(forwards)` directly, so this is mostly for debugging.
+        """
+        fn_name = getattr(self.func, "__name__", repr(self.func))
+        if self.reverse_func:
+            rev_name = getattr(self.reverse_func, "__name__", repr(self.reverse_func))
+            return f"RunPython({fn_name}, reverse_func={rev_name})"
+        return f"RunPython({fn_name})"

@@ -207,14 +207,19 @@ def diff_states(
         for fname in sorted(old_fields.keys() & new_fields.keys()):
             old_fs = old_fields[fname]
             new_fs = new_fields[fname]
-            if new_fs != old_fs:
+
+            old_opts = _options_with_type(old_fs)
+            new_opts = _options_with_type(new_fs)
+
+            # If either the abstract type or any option differs, we need an AlterField
+            if (old_fs.field_type != new_fs.field_type) or (old_opts != new_opts):
                 ops.append(
                     AlterField(
                         model_name=model_name,
                         db_table=new_model.db_table,
                         field_name=fname,
-                        old_options=_options_with_type(old_fs),
-                        new_options=_options_with_type(new_fs),
+                        old_options=old_opts,
+                        new_options=new_opts,
                     ),
                 )
 

@@ -139,3 +139,22 @@ def test_alter_field_nullability():
     al = al_ops[0]
     assert al.db_table == "user"
     assert al.new_options.get("null") is True
+
+
+def test_alter_charfield_max_length():
+    """Changing nullability should emit AlterField."""
+    old = project(
+        {"Book": model("Book", [("title", "CharField", {"max_length": 200})])},
+    )
+    new = project(
+        {"Book": model("Book", [("title", "CharField", {"max_length": 300})])},
+    )
+
+    ops = diff_states(old, new)
+    al_ops = [
+        op for op in ops if isinstance(op, AlterField) and op.field_name == "title"
+    ]
+    assert al_ops, "Expected an AlterField(id) operation"
+    al = al_ops[0]
+    assert al.db_table == "book"
+    assert al.new_options.get("max_length") == 300  # noqa: PLR2004

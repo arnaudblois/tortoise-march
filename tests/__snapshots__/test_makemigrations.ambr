@@ -1,4 +1,64 @@
 # serializer version: 1
+# name: test_makemigrations_emits_renamefield_for_manual_rename
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import RenameField
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          RenameField(
+              model_name="Book", db_table="book", old_name="title", new_name="name"
+          ),
+      ]
+  
+  '''
+# ---
+# name: test_makemigrations_emits_renamefield_for_manual_rename.1
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import AddField, RemoveField
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          RemoveField(model_name="Book", db_table="book", field_name="name"),
+          AddField(
+              model_name="Book",
+              db_table="book",
+              field_name="another_field",
+              field_type="CharField",
+              options={
+                  "null": False,
+                  "default": None,
+                  "unique": False,
+                  "index": False,
+                  "primary_key": False,
+                  "db_column": None,
+                  "max_length": 200,
+                  "max_digits": None,
+                  "decimal_places": None,
+                  "auto_now": False,
+                  "auto_now_add": False,
+                  "related_table": None,
+                  "related_model": None,
+                  "to_field": None,
+                  "on_delete": None,
+                  "referenced_type": None,
+              },
+          ),
+      ]
+  
+  '''
+# ---
 # name: test_makemigrations_integration
   '''
   

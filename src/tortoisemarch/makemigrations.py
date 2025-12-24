@@ -14,8 +14,8 @@ Notes:
 
 """
 
+import copy
 import re
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -31,13 +31,6 @@ from tortoisemarch.writer import write_migration
 
 # Matches files like "0001_initial.py" and captures the number as group(1)
 _MIGRATION_RE = re.compile(r"^(\d{4})_.*\.py$")
-
-
-def _name_similarity(a: str, b: str) -> float:
-    def base(n: str) -> str:
-        return n.lower().removesuffix("_id")
-
-    return SequenceMatcher(None, base(a), base(b)).ratio()
 
 
 def _input_int(prompt: str, default: int = 0, max_value: int | None = None) -> int:
@@ -169,7 +162,6 @@ def _choose_renames_interactive(  # noqa: C901
             summary_old = _summarize_opts({"type": old_fs.field_type, **old_fs.options})
             new_fs = new_fields[best_new]
             summary_new = _summarize_opts({"type": new_fs.field_type, **new_fs.options})
-
             click.echo(
                 f"🔎 [{model_label}] Possible rename: {old_name} → {best_new}  "
                 f"(score {best_score:.1f})\n"
@@ -222,6 +214,19 @@ def _safe_input(prompt: str, *, default: bool = False) -> bool:
     return default
 
 
+def _tortoise_conf_for_introspection(conf: dict[str, Any]) -> dict[str, Any]:
+    """Return a *copy* of the Tortoise config using in-memory SQLite.
+
+    We only need models and metadata for makemigrations, not a real DB.
+    So we keep the same apps, but point every connection to sqlite://:memory:.
+    """
+    conf_copy: dict[str, Any] = copy.deepcopy(conf)
+    conns = conf_copy.setdefault("connections", {})
+    for name in list(conns.keys()):
+        conns[name] = "sqlite://:memory:"
+    return conf_copy
+
+
 async def makemigrations(
     tortoise_conf: dict | None = None,
     location: Path | None = None,
@@ -249,6 +254,7 @@ async def makemigrations(
         tortoise_conf = config["tortoise_orm"]
         location = config["location"] or Path("tortoisemarch/migrations")
     location = Path(location)
+    tortoise_conf = _tortoise_conf_for_introspection(conf=tortoise_conf)
 
     # Init the Tortoise apps so extractor can see the models
     await Tortoise.init(config=tortoise_conf)

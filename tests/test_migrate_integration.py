@@ -26,8 +26,8 @@ def _tortoise_conf(models_module: str = "models") -> dict:
 
 
 @pytest.mark.asyncio
-async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):
-    """Evolve schema step-by-step.
+async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR0915
+    """Evolve schema step-by-step and assert exact SQL.
 
     At each step:
     1) generate a migration
@@ -47,18 +47,29 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):
     sys.path.insert(0, str(tmp_path))
 
     async def prepare_models(models_code: str) -> dict:
-        # Write models and (re)init Tortoise before importing models so they bind
+        """Overwrite the models file (with cache busting), generate migrations.
+
+        CPython reuses .pyc bytecode when the file size and (second-resolution)
+        mtime haven't changed, which often happens in these rapid test steps.
+        Without clearing the cached .pyc and invalidating import caches, the
+        old model definitions may be reused and schema diffs will be wrong.
+        """
         (models_dir / "__init__.py").write_text(models_code)
-        await Tortoise._reset_apps()  # noqa: SLF001
-        tortoise_orm = _tortoise_conf("models")
-        await Tortoise.init(config=tortoise_orm)
+
+        # Ensure Python does not reuse stale bytecode
+        # Otherwise this causes some
+        pycache_dir = models_dir / "__pycache__"
+        if pycache_dir.exists():
+            for f in pycache_dir.glob("__init__.*.pyc"):
+                f.unlink()
+
+        importlib.invalidate_caches()
+
         if "models" in sys.modules:
-            importlib.reload(sys.modules["models"])
-        else:
-            importlib.import_module("models")
-        # Generate migration for current state
+            del sys.modules["models"]
+
+        tortoise_orm = _tortoise_conf("models")
         await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
-        await Tortoise.close_connections()
         return tortoise_orm
 
     # ---------------- Step 1: Create Book ----------------
@@ -123,9 +134,11 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):
     )
 
     # Apply and verify pre-existing data survived
-    await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+    await migrate(tortoise_orm, migrations_dir)
     await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
+    from models import Book  # noqa: PLC0415
+
     assert await Book.all().count() == 1
     await Tortoise.close_connections()
 
@@ -154,13 +167,233 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):
     )
 
     # Apply and check defaults/data
-    await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+    await migrate(tortoise_orm, migrations_dir)
     await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
-    from models import Author  # noqa: PLC0415
+    from models import Author, Book  # noqa: PLC0415
 
     a = await Author.create(name="Tolkien")
     assert a.active is True
     books = await Book.all()
     assert books[0].title == "The Hobbit"
+    await Tortoise.close_connections()
+
+    # -------- Step 4: Add nullable FK Book.author -> Author --------
+    tortoise_orm = await prepare_models(
+        textwrap.dedent(
+            """
+            from uuid import uuid4
+            from tortoise import fields, models
+
+            class Book(models.Model):
+                id = fields.UUIDField(primary_key=True, default=uuid4)
+                title = fields.CharField(max_length=200)
+                author = fields.ForeignKeyField(
+                    "models.Author",
+                    related_name="books",
+                    null=True,
+                    on_delete=fields.CASCADE,
+                )
+
+            class Author(models.Model):
+                id = fields.UUIDField(primary_key=True, default=uuid4)
+                name = fields.CharField(max_length=200)
+                active = fields.BooleanField(default=True)
+            """,
+        ),
+    )
+
+    sql = await migrate(tortoise_conf=tortoise_orm, location=migrations_dir, sql=True)
+    # Note: null=True -> no NOT NULL in SQL
+    assert sql == (
+        'ALTER TABLE "book" ADD COLUMN '
+        '"author_id" UUID REFERENCES "author" ("id") ON DELETE CASCADE;'
+    )
+
+    # Apply and verify FK works + existing data survives
+    await migrate(tortoise_orm, migrations_dir)
+    await Tortoise._reset_apps()  # noqa: SLF001
+    await Tortoise.init(config=_tortoise_conf("models"))
+    from models import Author, Book  # noqa: PLC0415
+
+    # We already have 1 Book + 1 Author from previous steps
+    assert await Book.all().count() == 1
+    assert await Author.all().count() == 1
+
+    new_author = await Author.create(name="Pratchett")
+    new_book = await Book.create(title="Small Gods", author=new_author)
+
+    # Now we're using the *current* Book class, so author_id exists
+    assert new_book.author_id == new_author.id
+    titles = {b.title for b in await Book.all()}
+    assert titles == {"The Hobbit", "Small Gods"}
+    await Tortoise.close_connections()
+
+    # -------- Step 5: Widen Book.title from 200 to 300 chars --------
+    tortoise_orm = await prepare_models(
+        textwrap.dedent(
+            """
+            from uuid import uuid4
+            from tortoise import fields, models
+
+            class Book(models.Model):
+                id = fields.UUIDField(primary_key=True, default=uuid4)
+                title = fields.CharField(max_length=300)
+                author = fields.ForeignKeyField(
+                    "models.Author",
+                    related_name="books",
+                    null=True,
+                    on_delete=fields.CASCADE,
+                )
+
+            class Author(models.Model):
+                id = fields.UUIDField(primary_key=True, default=uuid4)
+                name = fields.CharField(max_length=200)
+                active = fields.BooleanField(default=True)
+            """,
+        ),
+    )
+    sql = await migrate(tortoise_conf=tortoise_orm, location=migrations_dir, sql=True)
+    assert sql == ('ALTER TABLE "book" ALTER COLUMN "title" TYPE VARCHAR(300);')
+
+    # Apply and ensure data still present
+    await migrate(tortoise_orm, migrations_dir)
+    await Tortoise._reset_apps()  # noqa: SLF001
+    await Tortoise.init(config=_tortoise_conf("models"))
+    from models import Author, Book  # noqa: PLC0415
+
+    titles = {b.title for b in await Book.all()}
+    assert titles == {"The Hobbit", "Small Gods"}
+    authors = {a.name for a in await Author.all()}
+    assert authors == {"Tolkien", "Pratchett"}
+    await Tortoise.close_connections()
+
+    # -------- Step 6: Make Author.name nullable --------
+    tortoise_orm = await prepare_models(
+        textwrap.dedent(
+            """
+            from uuid import uuid4
+            from tortoise import fields, models
+
+            class Book(models.Model):
+                id = fields.UUIDField(primary_key=True, default=uuid4)
+                title = fields.CharField(max_length=300)
+                author = fields.ForeignKeyField(
+                    "models.Author",
+                    related_name="books",
+                    null=True,
+                    on_delete=fields.CASCADE,
+                )
+
+            class Author(models.Model):
+                id = fields.UUIDField(primary_key=True, default=uuid4)
+                name = fields.CharField(max_length=200, null=True)
+                active = fields.BooleanField(default=True)
+            """,
+        ),
+    )
+
+    sql = await migrate(tortoise_conf=tortoise_orm, location=migrations_dir, sql=True)
+    assert sql == ('ALTER TABLE "author" ALTER COLUMN "name" DROP NOT NULL;')
+
+    # Apply and verify we can create an author with no name
+    await migrate(tortoise_orm, migrations_dir)
+    await Tortoise._reset_apps()  # noqa: SLF001
+    await Tortoise.init(config=_tortoise_conf("models"))
+    from models import Author, Book  # noqa: PLC0415
+
+    nameless = await Author.create(name=None)
+    assert nameless.name is None
+    # Existing books still present
+    titles = {b.title for b in await Book.all()}
+    assert titles == {"The Hobbit", "Small Gods"}
+    await Tortoise.close_connections()
+
+
+@pytest.mark.asyncio
+async def test_runpython_data_migration_uses_orm(tmp_path: Path):
+    """RunPython migrations should be able to use the Tortoise ORM."""
+    # Setup: migrations + models packages
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    # --- Step 1: create Book model and generate initial migration ---
+    models_code = textwrap.dedent(
+        """
+        from uuid import uuid4
+        from tortoise import fields, models
+
+        class Book(models.Model):
+            id = fields.UUIDField(primary_key=True, default=uuid4)
+            title = fields.CharField(max_length=200)
+        """,
+    )
+    (models_dir / "__init__.py").write_text(models_code)
+
+    if "models" in sys.modules:
+        del sys.modules["models"]
+
+    tortoise_orm = _tortoise_conf("models")
+
+    # Generate initial migration (0001_initial) - makemigrations uses sqlite in-memory
+    await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+    # Apply the initial migration to create the table in Postgres
+    await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+    # Insert some data using the ORM (now we init Tortoise against Postgres)
+    await Tortoise._reset_apps()  # noqa: SLF001
+    await Tortoise.init(config=_tortoise_conf("models"))
+    from models import Book  # noqa: PLC0415
+
+    await Book.create(title="The Hobbit")
+    await Book.create(title="Dune")
+    books = await Book.all().order_by("title")
+    assert [b.title for b in books] == ["Dune", "The Hobbit"]
+    await Tortoise.close_connections()
+
+    # --- Step 2: create a manual RunPython migration that uses the ORM ---
+
+    data_migration_path = migrations_dir / "0002_uppercase_titles.py"
+    data_migration_path.write_text(
+        textwrap.dedent(
+            """
+            from tortoisemarch.base import BaseMigration
+            from tortoisemarch.operations import RunPython
+
+            async def forwards(conn, schema_editor):
+                # Use the ORM to mutate data
+                from models import Book
+                books = await Book.all()
+                for book in books:
+                    book.title = book.title.upper()
+                    await book.save()
+
+            class Migration(BaseMigration):
+                operations = [
+                    RunPython(forwards),
+                ]
+            """,
+        ),
+    )
+
+    # At this point:
+    # - 0001_* has been recorded as applied
+    # - 0002_uppercase_titles is pending
+
+    # Run the data migration
+    await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+    # Verify the RunPython code actually ran and used the ORM
+    await Tortoise._reset_apps()  # noqa: SLF001
+    await Tortoise.init(config=_tortoise_conf("models"))
+    books = await Book.all().order_by("title")
+    titles = [b.title for b in books]
+    assert titles == ["DUNE", "THE HOBBIT"]
     await Tortoise.close_connections()

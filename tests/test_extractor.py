@@ -67,9 +67,22 @@ async def test_extract_project_state_with_fk():
     assert author_fields["name"].field_type == "CharField"
     assert author_fields["active"].field_type == "BooleanField"
     assert author_fields["active"].default is True
-
     # Book fields
+    # We only keep the logical FK field 'author', the backing column is in db_column
+    assert set(book_fields.keys()) == {"id", "title", "author"}
+
     assert book_fields["id"].field_type == "UUIDField"
     assert book_fields["title"].field_type == "CharField"
-    assert book_fields["author_id"].field_type == "IntField"
-    assert book_fields["author_id"].null is False
+
+    fk = book_fields["author"]
+    # Logical type
+    assert fk.field_type == "ForeignKeyFieldInstance"
+    # Backing DB column name
+    assert fk.db_column == "author_id"
+    # FK target type inferred from Author.id (IntField)
+    assert fk.referenced_type == "IntField"
+    # Nullability
+    assert fk.null is False
+    # Sanity: relation metadata
+    assert fk.related_table == "author"
+    assert fk.to_field == "id"

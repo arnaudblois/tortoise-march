@@ -264,18 +264,52 @@ def extract_model_state(model_cls: type[Model]) -> ModelState:
     """Convert a Tortoise model class into a ModelState.
 
     Preserves field order as defined by Tortoise (fields_map is ordered).
-    Skips ManyToMany pseudo-fields; their through tables are handled elsewhere.
+
+    Skips:
+        - ManyToMany pseudo-fields (handled via through tables)
+        - reverse relations (e.g. BackwardFKRelation)
+        - scalar backing fields for FKs (e.g. `author_id` when we already
+          have a forward ForeignKeyFieldInstance describing that column)
     """
     field_states: dict[str, FieldState] = {}
-    model_cls_meta = model_cls._meta  # noqa: SLF001
-    for fname, field in model_cls_meta.fields_map.items():
-        if _field_type_name(field) == "ManyToManyFieldInstance":
+    meta = model_cls._meta  # noqa: SLF001
+
+    # First pass: collect DB column names used by forward FK/O2O relations.
+    # This lets us later ignore scalar backing fields pointing to the same column.
+    fk_backing_columns: set[str] = set()
+    for fname, field in meta.fields_map.items():
+        tname = _field_type_name(field)
+        if tname in {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}:
+            # Tortoise uses `source_field` as the actual DB column; if missing,
+            # conventions give `<name>_id`.
+            db_column = getattr(field, "source_field", None) or f"{fname}_id"
+            fk_backing_columns.add(db_column)
+
+    # Second pass: build FieldState only for real DB fields
+    for fname, field in meta.fields_map.items():
+        tname = _field_type_name(field)
+
+        # 1) Skip ManyToMany pseudo-fields entirely.
+        if tname == "ManyToManyFieldInstance":
             continue
+
+        # 2) Skip obvious reverse relations (no DB column; not a real field).
+        #    Tortoise uses BackwardFKRelation and friends for these.
+        if tname == "BackwardFKRelation":
+            continue
+
+        # 3) Skip scalar backing fields for FK columns if the FK already covers them.
+        #    Example: "author_id" (UUIDField) vs "author" (ForeignKeyFieldInstance).
+        if fname in fk_backing_columns and not _is_relational(field):
+            # We already have a forward relation whose DB column is this name.
+            # The FK FieldState will emit the correct column via its source_field.
+            continue
+
         field_states[fname.lower()] = extract_field_state(fname, field)
 
     return ModelState(
         name=model_cls.__name__,
-        db_table=getattr(model_cls_meta, "db_table", model_cls.__name__.lower()),
+        db_table=getattr(meta, "db_table", model_cls.__name__.lower()),
         field_states=field_states,
     )
 
