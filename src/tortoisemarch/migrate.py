@@ -96,7 +96,6 @@ async def migrate(
             if not pending_files:
                 click.echo("✅ No pending migrations.")
                 return "" if sql else None
-
             for file in pending_files:
                 name = file.stem
                 click.echo(f"🚀 Migration {name}")

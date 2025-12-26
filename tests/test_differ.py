@@ -35,7 +35,7 @@ def project(model_states: dict[str, ModelState]) -> ProjectState:
 def test_create_model():
     """Creating a model should emit a CreateModel op with correct fields."""
     old = project({})
-    new = project({"User": model("User", [("id", "IntField", {"null": False})])})
+    new = project({"User": model("User", [("id", "IntField", {"null": True})])})
 
     ops = diff_states(old, new)
     assert len(ops) == 1
@@ -48,7 +48,7 @@ def test_create_model():
     field_name, field_type, opts = operation.fields[0]
     assert field_name == "id"
     assert field_type == "IntField"
-    assert opts.get("null") is False
+    assert opts.get("null") is True
 
 
 def test_remove_model():
@@ -158,3 +158,21 @@ def test_alter_charfield_max_length():
     al = al_ops[0]
     assert al.db_table == "book"
     assert al.new_options.get("max_length") == 300  # noqa: PLR2004
+
+
+def test_diff_states_emits_alterfield_for_charfield_length_even_if_compacted():
+    """Test diff_states works when changing max_length of a CharField."""
+    old = project({"Book": model("Book", [("title", "CharField", {})])})
+    new = project(
+        {"Book": model("Book", [("title", "CharField", {"max_length": 300})])},
+    )
+
+    ops = diff_states(old, new)
+    alters = [
+        op for op in ops if isinstance(op, AlterField) and op.field_name == "title"
+    ]
+    assert alters
+    assert alters[0].old_options["type"] == "CharField"
+    assert alters[0].new_options["type"] == "CharField"
+    assert alters[0].old_options["max_length"] == 255  # noqa: PLR2004
+    assert alters[0].new_options["max_length"] == 300  # noqa: PLR2004

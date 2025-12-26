@@ -241,7 +241,13 @@ def test_to_code_is_stringy():
         AddField("Thing", "thing", "name", "CharField", {"max_length": 20}),
         RemoveField("Thing", "thing", "name"),
         # FIX: include field_name for AlterField
-        AlterField("Thing", "thing", "id", {"type": "IntField"}, {"null": True}),
+        AlterField(
+            "Thing",
+            "thing",
+            "id",
+            {"type": "IntField"},
+            {"type": "IntField", "null": True},
+        ),
         RemoveModel("Thing", "thing"),
         RenameField("Thing", "thing", "old", "new"),
     ]

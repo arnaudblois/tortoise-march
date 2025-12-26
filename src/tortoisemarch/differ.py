@@ -41,6 +41,23 @@ def _options_with_type(fs) -> dict:
     return opts
 
 
+def _options_for_alter(fs) -> dict:
+    # copy so we never share/mutate
+    opts = dict(fs.options)
+
+    # ALWAYS include abstract type for AlterField rendering/diffing
+    opts["type"] = fs.field_type
+
+    # If you compacted max_length away, rehydrate the default for comparison/rendering
+    # (or do Option A and enforce it earlier; but this is the diff-side guardrail)
+    if fs.field_type == "CharField":
+        ml = opts.get("max_length")
+        if ml is None:
+            opts["max_length"] = 255
+
+    return opts
+
+
 def _same_except_name(old_fs, new_fs) -> bool:
     """Check if two FieldStates are identical aside from the name."""
     return (old_fs.field_type == new_fs.field_type) and (
@@ -170,10 +187,10 @@ def diff_states(
                         AlterField(
                             model_name=model_name,
                             db_table=new_model.db_table,
-                            field_name=old_name,  # existing column name in DB
-                            old_options=_options_with_type(old_fs),
-                            new_options=_options_with_type(new_fs),
-                            new_name=new_name,  # perform rename + alter
+                            field_name=old_name,
+                            old_options=_options_for_alter(old_fs),
+                            new_options=_options_for_alter(new_fs),
+                            new_name=new_name,
                         ),
                     )
                 removed_names.remove(old_name)
@@ -208,11 +225,10 @@ def diff_states(
             old_fs = old_fields[fname]
             new_fs = new_fields[fname]
 
-            old_opts = _options_with_type(old_fs)
-            new_opts = _options_with_type(new_fs)
+            old_opts = _options_for_alter(old_fs)
+            new_opts = _options_for_alter(new_fs)
 
-            # If either the abstract type or any option differs, we need an AlterField
-            if (old_fs.field_type != new_fs.field_type) or (old_opts != new_opts):
+            if old_opts != new_opts:
                 ops.append(
                     AlterField(
                         model_name=model_name,

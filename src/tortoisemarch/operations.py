@@ -18,6 +18,32 @@ def _lc(name: str) -> str:
     return name.lower()
 
 
+def _changed_only(old: dict, new: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return Python code to recreate this operation."""
+    keys = set(old) | set(new)
+    old_out: dict[str, Any] = {}
+    new_out: dict[str, Any] = {}
+    for k in keys:
+        if old.get(k) != new.get(k):
+            old_out[k] = old.get(k)
+            new_out[k] = new.get(k)
+    return old_out, new_out
+
+
+def _compact_opts_for_code(opts: dict[str, Any]) -> dict[str, Any]:
+    """Make migrations readable by removing non-meaningful opts."""
+    out: dict[str, Any] = {}
+    for k, v in opts.items():
+        if v is None:
+            continue
+        if v is False:
+            continue
+        if v in ({}, [], ()):
+            continue
+        out[k] = v
+    return out
+
+
 class Operation(ABC):
     """Base class for all schema migration operations."""
 
@@ -74,17 +100,12 @@ class CreateModel(Operation):
 
     @classmethod
     def from_model_state(cls, model_state: ModelState) -> "CreateModel":
-        """Build a CreateModel operation from a ModelState."""
-        # Take a *snapshot* of current fields (no shared dicts).
+        """Set up the CreateModel operation from a ModelState."""
         fields: list[tuple[str, str, dict[str, Any]]] = [
-            (fs.name, fs.field_type, dict(fs.options))
+            (fs.name, fs.field_type, _compact_opts_for_code(dict(fs.options)))
             for fs in model_state.field_states.values()
         ]
-        return cls(
-            name=model_state.name,
-            db_table=model_state.db_table,
-            fields=fields,
-        )
+        return cls(name=model_state.name, db_table=model_state.db_table, fields=fields)
 
     def mutate_state(self, state: ProjectState) -> None:
         """Add the model and its fields to the in-memory state."""
@@ -195,12 +216,13 @@ class AddField(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
+        opts = _compact_opts_for_code(dict(self.options))
         return (
             f"AddField(model_name={self.model_name!r}, "
             f"db_table={self.db_table!r}, "
             f"field_name={self.field_name!r}, "
             f"field_type={self.field_type!r}, "
-            f"options={self.options!r})"
+            f"options={opts!r})"
         )
 
 
@@ -326,12 +348,28 @@ class AlterField(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
+        old_opts = dict(self.old_options)
+        new_opts = dict(self.new_options)
+
+        old_changed, new_changed = _changed_only(old_opts, new_opts)
+        old_changed["type"] = old_opts["type"]
+        new_changed["type"] = new_opts["type"]
+
+        # Never compact away 'type' (and keep max_length if CharField)
+        def _compact(d: dict) -> dict:
+            keep = {"type"}
+            if d.get("type") == "CharField":
+                keep.add("max_length")
+            return {k: v for k, v in d.items() if (v is not None) or (k in keep)}
+
+        old_changed = _compact(old_changed)
+        new_changed = _compact(new_changed)
         base = (
             f"AlterField(model_name={self.model_name!r}, "
             f"db_table={self.db_table!r}, "
             f"field_name={self.field_name!r}, "
-            f"old_options={self.old_options!r}, "
-            f"new_options={self.new_options!r}"
+            f"old_options={old_changed!r}, "
+            f"new_options={new_changed!r}"
         )
         if self.new_name:
             base += f", new_name={self.new_name!r}"

@@ -256,24 +256,32 @@ class PostgresSchemaEditor(SchemaEditor):
     ) -> list[str]:
         """Best-effort ALTER TYPE for common safe cases (e.g., VARCHAR length).
 
-        We do *not* attempt arbitrary rewrites (e.g., int -> uuid) here.
+        With compact/sparse options, missing keys mean "unknown/implicit", not a
+        concrete default. We only emit SQL when we can confidently detect a change.
         """
         stmts: list[str] = []
 
         old_type = old.get("type")
         new_type = new.get("type")
-        if old_type == new_type == "CharField":
-            old_len = old.get("max_length", 255)
-            new_len = new.get("max_length", 255)
-            if old_len != new_len:
-                stmts.append(
-                    f"ALTER TABLE {self._q_ident(db_table.lower())} "
-                    f"ALTER COLUMN {self._q_ident(field_name)} "
-                    f"TYPE VARCHAR({new_len});",
-                )
 
-        # You could add more cases here (e.g., Decimal precision changes),
-        # but many require USING casts and/or data validation.
+        # If type is missing on either side, we can't safely infer this path here.
+        if old_type != "CharField" or new_type != "CharField":
+            return []
+
+        # IMPORTANT: if either side does not specify max_length, treat as unknown.
+        # Do NOT assume 255, because that will mask real changes after compaction.
+        if "max_length" not in old or "max_length" not in new:
+            return []
+
+        old_len = old["max_length"]
+        new_len = new["max_length"]
+
+        if old_len != new_len:
+            stmts.append(
+                f"ALTER TABLE {self._q_ident(db_table.lower())} "
+                f"ALTER COLUMN {self._q_ident(field_name)} "
+                f"TYPE VARCHAR({new_len});",
+            )
 
         return stmts
 
