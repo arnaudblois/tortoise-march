@@ -254,6 +254,15 @@ async def makemigrations(
         tortoise_conf = config["tortoise_orm"]
         location = config["location"] or Path("tortoisemarch/migrations")
     location = Path(location)
+    location.mkdir(parents=True, exist_ok=True)
+    init_file = location / "__init__.py"
+    init_file.touch(exist_ok=True)
+
+    if init_file.stat().st_size == 0:
+        init_file.write_text(
+            '"""Directory for TortoiseMarch migrations."""\n', encoding="utf-8"
+        )
+
     tortoise_conf = _tortoise_conf_for_introspection(conf=tortoise_conf)
 
     # Init the Tortoise apps so extractor can see the models
