@@ -36,7 +36,7 @@
               db_table="book",
               field_name="another_field",
               field_type="CharField",
-              options={"max_length": 200},
+              options={"default": "", "max_length": 200},
           ),
       ]
   

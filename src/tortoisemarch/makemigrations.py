@@ -27,10 +27,90 @@ from tortoisemarch.differ import diff_states, score_candidate
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.extractor import extract_project_state
 from tortoisemarch.loader import load_migration_state
+from tortoisemarch.operations import AddField, AlterField, CreateModel
 from tortoisemarch.writer import write_migration
 
 # Matches files like "0001_initial.py" and captures the number as group(1)
 _MIGRATION_RE = re.compile(r"^(\d{4})_.*\.py$")
+
+
+def _has_db_initialisable_default(opts: dict[str, Any]) -> bool:
+    """Return True if the field has a default that the database can apply directly.
+
+    `db_default` is always accepted. Literal `default` values are accepted.
+    `None` and callable defaults (sentinel `"callable"`) are rejected.
+    """
+    if "db_default" in opts and opts["db_default"] is not None:
+        return True
+    if "default" not in opts:
+        return False
+    default = opts["default"]
+    return default not in (None, "callable")
+
+
+def _validate_non_nullable_adds_and_warn_alters(  # noqa: C901, PLR0912
+    operations: list[Any],
+) -> None:
+    """Guard unsafe non-nullable schema changes during migration generation.
+
+    - Adding a non-nullable field without a DB-level default to an existing table
+      is forbidden and raises `InvalidMigrationError`.
+    - Making a nullable field non-nullable without a default prompts for
+      confirmation, as it requires a prior data backfill.
+    """
+    created_models: set[str] = set()
+    for op in operations:
+        if isinstance(op, CreateModel):
+            created_models.add(op.name)
+
+    problems_add: list[str] = []
+    risky_alters: list[str] = []
+
+    for op in operations:
+        if isinstance(op, AddField):
+            if op.model_name in created_models:
+                continue
+            opts = op.options
+            if opts.get("null") is True:
+                continue
+            if _has_db_initialisable_default(opts):
+                continue
+            problems_add.append(f"{op.model_name}.{op.field_name}")
+
+        elif isinstance(op, AlterField):
+            old_null = op.old_options.get("null")
+            new_null = op.new_options.get("null")
+            if old_null is True and new_null is False:
+                opts = op.new_options
+                if not _has_db_initialisable_default(opts):
+                    risky_alters.append(f"{op.model_name}.{op.field_name}")
+
+    if problems_add:
+        msg = (
+            "Cannot generate migration:\n"
+            "You added a non-nullable field without a default "
+            "(cannot backfill existing rows).\n"
+            "Fix by adding a default or add it as nullable "
+            "first then backfill then alter.\n\n"
+            "Problems:\n  - " + "\n  - ".join(problems_add),
+        )
+        raise InvalidMigrationError(msg)
+
+    if risky_alters:
+        click.echo(
+            "⚠️  About to make fields NOT NULL without a default.\n"
+            "This is allowed only if you backfill NULL values first "
+            "(typically via a data migration / RunPython).\n\n"
+            "Affected fields:\n  - " + "\n  - ".join(risky_alters),
+        )
+        proceed = _safe_input("Proceed anyway? [y/N]", default=False)
+        if not proceed:
+            msg = (
+                "Migration cancelled.\n"
+                "Backfill NULL values first (data migration), "
+                "then re-run makemigrations.",
+            )
+            raise InvalidMigrationError(msg)
 
 
 def _input_int(prompt: str, default: int = 0, max_value: int | None = None) -> int:
@@ -260,7 +340,8 @@ async def makemigrations(
 
     if init_file.stat().st_size == 0:
         init_file.write_text(
-            '"""Directory for TortoiseMarch migrations."""\n', encoding="utf-8"
+            '"""Directory for TortoiseMarch migrations."""\n',
+            encoding="utf-8",
         )
 
     tortoise_conf = _tortoise_conf_for_introspection(conf=tortoise_conf)
@@ -288,6 +369,7 @@ async def makemigrations(
     new_state = extract_project_state(apps=Tortoise.apps)
     rename_map = _choose_renames_interactive(old_state, new_state)
     operations = diff_states(old_state, new_state, rename_map=rename_map or {})
+    _validate_non_nullable_adds_and_warn_alters(operations)
 
     # 5) Write or noop
     if operations:

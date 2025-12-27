@@ -163,7 +163,7 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
 
     sql = await migrate(tortoise_conf=tortoise_orm, location=migrations_dir, sql=True)
     assert sql == (
-        'ALTER TABLE "author" ADD COLUMN "active" BOOLEAN NOT NULL DEFAULT True;'
+        'ALTER TABLE "author" ADD COLUMN "active" BOOLEAN NOT NULL DEFAULT TRUE;'
     )
 
     # Apply and check defaults/data

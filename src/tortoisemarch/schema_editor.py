@@ -174,7 +174,12 @@ class PostgresSchemaEditor(SchemaEditor):
         }
         return aliases.get(up, up)
 
-    def _column_def(self, name: str, field_type: str, options: dict[str, Any]) -> str:
+    def _column_def(  # noqa: C901
+        self,
+        name: str,
+        field_type: str,
+        options: dict[str, Any],
+    ) -> str:
         """Build a single column definition for CREATE/ALTER statements."""
         # Base SQL type (FK uses referenced PK type).
         base_sql_type = self.sql_for_field(field_type, options)
@@ -194,7 +199,16 @@ class PostgresSchemaEditor(SchemaEditor):
 
         # Default (literal values only; callables are not rendered)
         if "default" in options and options["default"] not in [None, "callable"]:
-            parts.append(f"DEFAULT {options['default']!r}")
+            default = options["default"]
+            if isinstance(default, bool):
+                parts.append("DEFAULT TRUE" if default else "DEFAULT FALSE")
+            elif isinstance(default, (int, float)):
+                parts.append(f"DEFAULT {default}")
+            elif isinstance(default, str):
+                parts.append(f"DEFAULT {default!r}")
+            else:
+                msg = f"Unsupported default literal: {default!r}"
+                raise TypeError(msg)
 
         # Inline FK references
         if field_type in {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}:

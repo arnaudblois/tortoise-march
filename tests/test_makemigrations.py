@@ -224,7 +224,7 @@ async def test_makemigrations_emits_renamefield_for_manual_rename(
     assert "RenameField" in mig_text
     assert "\n".join(mig_text.split("\n")[1:]) == snapshot
 
-    # Step 3: rename field `title` -> `name` (same type/options)
+    # Step 3: add another unrelated field
     write_models(
         """
         from uuid import uuid4
@@ -232,7 +232,7 @@ async def test_makemigrations_emits_renamefield_for_manual_rename(
 
         class Book(models.Model):
             id = fields.UUIDField(primary_key=True, default=uuid4)
-            another_field = fields.CharField(max_length=200)
+            another_field = fields.CharField(max_length=200, default="")
         """,
     )
 
