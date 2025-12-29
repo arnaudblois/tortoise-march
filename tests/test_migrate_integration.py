@@ -121,6 +121,7 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
             class Author(models.Model):
                 id = fields.UUIDField(primary_key=True, default=uuid4)
                 name = fields.CharField(max_length=200)
+                is_superuser = fields.BooleanField(default=False)
             """,
         ),
     )
@@ -129,7 +130,8 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
     assert sql == (
         'CREATE TABLE "author" ('
         '"id" UUID PRIMARY KEY NOT NULL UNIQUE, '
-        '"name" VARCHAR(200) NOT NULL'
+        '"name" VARCHAR(200) NOT NULL, '
+        '"is_superuser" BOOLEAN NOT NULL DEFAULT FALSE'
         ");"
     )
 
@@ -156,6 +158,7 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
             class Author(models.Model):
                 id = fields.UUIDField(primary_key=True, default=uuid4)
                 name = fields.CharField(max_length=200)
+                is_superuser = fields.BooleanField(default=False)
                 active = fields.BooleanField(default=True)
             """,
         ),
@@ -198,6 +201,7 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
             class Author(models.Model):
                 id = fields.UUIDField(primary_key=True, default=uuid4)
                 name = fields.CharField(max_length=200)
+                is_superuser = fields.BooleanField(default=False)
                 active = fields.BooleanField(default=True)
             """,
         ),
@@ -249,6 +253,7 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
             class Author(models.Model):
                 id = fields.UUIDField(primary_key=True, default=uuid4)
                 name = fields.CharField(max_length=200)
+                is_superuser = fields.BooleanField(default=False)
                 active = fields.BooleanField(default=True)
             """,
         ),
@@ -288,6 +293,7 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
             class Author(models.Model):
                 id = fields.UUIDField(primary_key=True, default=uuid4)
                 name = fields.CharField(max_length=200, null=True)
+                is_superuser = fields.BooleanField(default=False)
                 active = fields.BooleanField(default=True)
             """,
         ),

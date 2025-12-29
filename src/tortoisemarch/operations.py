@@ -36,7 +36,7 @@ def _compact_opts_for_code(opts: dict[str, Any]) -> dict[str, Any]:
     for k, v in opts.items():
         if v is None:
             continue
-        if v is False:
+        if v is False and k != "default":
             continue
         if v in ({}, [], ()):
             continue
