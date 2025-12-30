@@ -13,6 +13,7 @@ from tortoise import Model, Tortoise, fields
 from tortoise.fields.data import CharEnumFieldInstance, IntEnumFieldInstance
 
 from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.schema_filtering import FK_TYPES
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 
 # ------------------------------- helpers --------------------------------
@@ -279,7 +280,7 @@ def extract_model_state(model_cls: type[Model]) -> ModelState:
     fk_backing_columns: set[str] = set()
     for fname, field in meta.fields_map.items():
         tname = _field_type_name(field)
-        if tname in {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}:
+        if tname in FK_TYPES:
             # Tortoise uses `source_field` as the actual DB column; if missing,
             # conventions give `<name>_id`.
             db_column = getattr(field, "source_field", None) or f"{fname}_id"

@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
-from tortoisemarch.schema_filtering import compact_opts_for_code, is_schema_field_type
+from tortoisemarch.schema_filtering import (
+    compact_opts_for_code,
+    is_schema_field_type,
+    column_sort_key,
+)
 
 
 def _lc(name: str) -> str:
@@ -88,17 +92,17 @@ class CreateModel(Operation):
     @classmethod
     def from_model_state(cls, model_state: ModelState) -> "CreateModel":
         """Set up the CreateModel operation from a ModelState."""
-        fields: list[tuple[str, str, dict[str, Any]]] = []
-        # sort for deterministic output
-        for fs in sorted(
-            model_state.field_states.values(),
-            key=lambda x: x.name.lower(),
-        ):
-            if not is_schema_field_type(fs.field_type):
-                continue
-            fields.append(
-                (fs.name, fs.field_type, compact_opts_for_code(dict(fs.options))),
-            )
+        field_list = list(model_state.field_states.values())
+
+        # Exclude non-schema field types (reverse relations, M2M sentinels, etc.)
+        field_list = [fs for fs in field_list if is_schema_field_type(fs.field_type)]
+
+        field_list.sort(key=column_sort_key)
+
+        fields: list[tuple[str, str, dict[str, Any]]] = [
+            (fs.name, fs.field_type, compact_opts_for_code(dict(fs.options)))
+            for fs in field_list
+        ]
         return cls(name=model_state.name, db_table=model_state.db_table, fields=fields)
 
     def mutate_state(self, state: ProjectState) -> None:

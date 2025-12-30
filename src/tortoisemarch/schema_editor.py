@@ -21,7 +21,7 @@ from typing import Any
 from tortoise import BaseDBAsyncClient
 
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.schema_filtering import NON_SCHEMA_FIELD_TYPES
+from tortoisemarch.schema_filtering import NON_SCHEMA_FIELD_TYPES, FK_TYPES
 
 PY_CALLABLE_SENTINELS = {"callable", "python_callable", "callable_handled_by_python"}
 
@@ -229,7 +229,7 @@ class PostgresSchemaEditor(SchemaEditor):
 
         # ---- foreign key -------------------------------------------------
 
-        if field_type in {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}:
+        if field_type in FK_TYPES:
             related_table = options.get("related_table")
             to_field = options.get("to_field", "id")
 
@@ -464,7 +464,7 @@ class PostgresSchemaEditor(SchemaEditor):
             msg = f"Non-schema field type leaked into schema: {field_type}"
             raise InvalidMigrationError(msg)
         # --- Relational fields use the referenced type ----------------------
-        if field_type in {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}:
+        if field_type in FK_TYPES:
             ref = options.get("referenced_type")
             fk_map = {
                 "SmallIntField": "SMALLINT",

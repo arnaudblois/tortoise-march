@@ -219,3 +219,48 @@ def test_create_model_cycle_detection():
             ProjectState(model_states={}),
             ProjectState(model_states={"A": a, "B": b}),
         )
+
+
+def test_create_model_column_order_is_stable_and_human_friendly():
+    """Test CreateModel orders columns deterministically with PK first and FKs last."""
+    ms = ModelState(
+        name="Thing",
+        db_table="thing",
+        field_states={
+            "id": FieldState(
+                name="id",
+                field_type="UUIDField",
+                primary_key=True,
+                unique=True,
+            ),
+            "created_at": FieldState(
+                name="created_at",
+                field_type="DatetimeField",
+            ),
+            "name": FieldState(
+                name="name",
+                field_type="CharField",
+                max_length=100,
+            ),
+            "owner": FieldState(
+                name="owner",
+                field_type="ForeignKeyFieldInstance",
+                related_table="user",
+                to_field="id",
+                referenced_type="UUIDField",
+            ),
+        },
+    )
+
+    op = CreateModel.from_model_state(ms)
+
+    cols = [name for name, _, _ in op.fields]
+
+    # Primary key first
+    assert cols[0] == "id"
+
+    # Scalar fields before relational fields
+    assert cols.index("name") < cols.index("owner")
+
+    # FK fields are last
+    assert cols[-1] == "owner"

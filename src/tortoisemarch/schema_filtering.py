@@ -7,7 +7,20 @@ and filtering out non-schema field types.
 from enum import Enum
 from typing import Any
 
+from tortoisemarch.model_state import FieldState
 from tortoisemarch.exceptions import InvalidMigrationError
+
+FK_TYPES = {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}
+
+NON_SCHEMA_FIELD_TYPES: set[str] = {
+    # Reverse relations (never stored in DB)
+    "BackwardFKRelation",
+    "BackwardOneToOneRelation",
+    "BackwardManyToManyRelation",
+    # Many-to-many fields imply a separate through table
+    "ManyToManyFieldInstance",
+    "ManyToManyRelation",
+}
 
 
 def _value_for_migration_code(v: Any) -> Any:
@@ -56,17 +69,35 @@ def compact_opts_for_code(opts: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-NON_SCHEMA_FIELD_TYPES: set[str] = {
-    # Reverse relations (never stored in DB)
-    "BackwardFKRelation",
-    "BackwardOneToOneRelation",
-    "BackwardManyToManyRelation",
-    # Many-to-many fields imply a separate through table
-    "ManyToManyFieldInstance",
-    "ManyToManyRelation",
-}
-
-
 def is_schema_field_type(field_type: str) -> bool:
     """Return True if the field type represents a physical schema column."""
     return field_type not in NON_SCHEMA_FIELD_TYPES
+
+
+def column_sort_key(fs: FieldState) -> tuple[int, int, str]:
+    """Return a stable, human-friendly sort key for CreateModel column ordering."""
+    col = (fs.options.get("db_column") or fs.name).lower()
+
+    if fs.options.get("primary_key"):
+        return (0, 0, col)
+
+    # Timestamps: created -> updated -> deleted
+    if fs.name == "created_at":
+        return (1, 0, col)
+    if fs.name == "updated_at":
+        return (1, 1, col)
+    if fs.name == "deleted_at":
+        return (1, 2, col)
+
+    # Audit actors: creator -> updater -> deleter
+    if fs.name in {"creator", "created_by"}:
+        return (2, 0, col)
+    if fs.name in {"updater", "updated_by"}:
+        return (2, 1, col)
+    if fs.name in {"deleter", "deleted_by"}:
+        return (2, 2, col)
+
+    if fs.field_type in FK_TYPES:
+        return (4, 0, col)
+
+    return (3, 0, col)

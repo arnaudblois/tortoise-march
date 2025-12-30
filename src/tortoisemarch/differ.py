@@ -31,11 +31,9 @@ from tortoisemarch.operations import (
     RemoveModel,
     RenameField,
 )
-from tortoisemarch.schema_filtering import is_schema_field_type
+from tortoisemarch.schema_filtering import is_schema_field_type, FK_TYPES
 
 # ----------------------------- helpers ---------------------------------
-
-FK_TYPES = {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}
 
 
 def _options_with_type(fs) -> dict:
@@ -99,10 +97,9 @@ def score_candidate(old_name: str, old_fs, new_name: str, new_fs) -> float:
 
     score = 50.0 * _name_similarity(old_name, new_name)
 
-    fk_types = {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}
     if (
-        old_fs.field_type in fk_types
-        and new_fs.field_type in fk_types
+        old_fs.field_type in FK_TYPES
+        and new_fs.field_type in FK_TYPES
         and old_opts.get("related_table") == new_opts.get("related_table")
     ):
         score += 20.0
