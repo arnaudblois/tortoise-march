@@ -132,7 +132,7 @@ def _resolve_related_bits(
     # Case 1: it's a class, maybe a Tortoise Model subclass
     if inspect.isclass(related_model):
         try:
-            is_model = issubclass(related_model, Model)  # type: ignore[name-defined]
+            is_model = issubclass(related_model, Model)
         except TypeError:
             is_model = False
 

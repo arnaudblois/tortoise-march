@@ -21,6 +21,9 @@ from typing import Any
 from tortoise import BaseDBAsyncClient
 
 from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.schema_filtering import NON_SCHEMA_FIELD_TYPES
+
+PY_CALLABLE_SENTINELS = {"callable", "python_callable", "callable_handled_by_python"}
 
 
 class SchemaEditor(ABC):
@@ -158,6 +161,22 @@ class PostgresSchemaEditor(SchemaEditor):
         """Return a safely quoted identifier for Postgres."""
         return f'"{name}"'
 
+    def _render_default_sql(self, default: Any) -> str | None:
+        if default is None:
+            return None
+        if isinstance(default, str) and default in PY_CALLABLE_SENTINELS:
+            return None
+        if isinstance(default, str) and default.startswith("db_default:"):
+            return default.split(":", 1)[1]  # raw SQL expression
+        if isinstance(default, bool):
+            return "TRUE" if default else "FALSE"
+        if isinstance(default, (int, float)):
+            return str(default)
+        if isinstance(default, str):
+            return repr(default)  # quoted string literal
+        msg = f"Unsupported default literal: {default!r}"
+        raise TypeError(msg)
+
     @staticmethod
     def _normalize_on_delete(val: str | None) -> str | None:
         """Normalize on_delete to a valid SQL clause."""
@@ -174,54 +193,58 @@ class PostgresSchemaEditor(SchemaEditor):
         }
         return aliases.get(up, up)
 
-    def _column_def(  # noqa: C901
+    def _column_def(
         self,
         name: str,
         field_type: str,
         options: dict[str, Any],
     ) -> str:
-        """Build a single column definition for CREATE/ALTER statements."""
-        # Base SQL type (FK uses referenced PK type).
+        """Build a single column definition for CREATE / ADD COLUMN."""
+        # Base SQL type (FKs resolve to referenced PK type)
         base_sql_type = self.sql_for_field(field_type, options)
 
-        # Physical column name (support db_column override).
+        # Physical column name (db_column override supported)
         colname = options.get("db_column") or name
 
         parts: list[str] = [f"{self._q_ident(colname)} {base_sql_type}"]
 
-        # Inline constraints
+        # ---- constraints -------------------------------------------------
+
         if options.get("primary_key"):
             parts.append("PRIMARY KEY")
+
+        # null=False → NOT NULL (default is NOT NULL unless explicitly nullable)
         if not options.get("null", False):
             parts.append("NOT NULL")
+
         if options.get("unique"):
             parts.append("UNIQUE")
 
-        # Default (literal values only; callables are not rendered)
-        if "default" in options and options["default"] not in [None, "callable"]:
-            default = options["default"]
-            if isinstance(default, bool):
-                parts.append("DEFAULT TRUE" if default else "DEFAULT FALSE")
-            elif isinstance(default, (int, float)):
-                parts.append(f"DEFAULT {default}")
-            elif isinstance(default, str):
-                parts.append(f"DEFAULT {default!r}")
-            else:
-                msg = f"Unsupported default literal: {default!r}"
-                raise TypeError(msg)
+        # ---- default -----------------------------------------------------
 
-        # Inline FK references
+        if "default" in options:
+            rendered = self._render_default_sql(options["default"])
+            if rendered is not None:
+                parts.append(f"DEFAULT {rendered}")
+
+        # ---- foreign key -------------------------------------------------
+
         if field_type in {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}:
             related_table = options.get("related_table")
             to_field = options.get("to_field", "id")
-            if related_table:
-                parts.append(
-                    f"REFERENCES {self._q_ident(related_table)} "
-                    f"({self._q_ident(to_field)})",
-                )
-                od = self._normalize_on_delete(options.get("on_delete"))
-                if od:
-                    parts.append(f"ON DELETE {od}")
+
+            if not related_table:
+                msg = f"FK field {name!r} missing related_table"
+                raise InvalidMigrationError(msg)
+
+            parts.append(
+                f"REFERENCES {self._q_ident(related_table)} "
+                f"({self._q_ident(to_field)})",
+            )
+
+            on_delete = self._normalize_on_delete(options.get("on_delete"))
+            if on_delete:
+                parts.append(f"ON DELETE {on_delete}")
 
         return " ".join(parts)
 
@@ -333,15 +356,11 @@ class PostgresSchemaEditor(SchemaEditor):
 
         # DEFAULT
         if old_options.get("default") != new_options.get("default"):
-            if "default" in new_options and new_options["default"] not in [
-                None,
-                "callable",
-            ]:
-                default = new_options["default"]
+            rendered = self._render_default_sql(new_options.get("default"))
+            if rendered is not None:
                 statements.append(
                     f"ALTER TABLE {self._q_ident(db_table.lower())} "
-                    f"ALTER COLUMN {self._q_ident(field_name)} "
-                    f"SET DEFAULT {default!r};",
+                    f"ALTER COLUMN {self._q_ident(field_name)} SET DEFAULT {rendered};",
                 )
             else:
                 statements.append(
@@ -349,9 +368,11 @@ class PostgresSchemaEditor(SchemaEditor):
                     f"ALTER COLUMN {self._q_ident(field_name)} DROP DEFAULT;",
                 )
 
-        # (Optional) RENAME as a separate statement at the end
-        if new_name and new_name != field_name:
-            statements.append(self.sql_rename_field(db_table, field_name, new_name))
+                # (Optional) RENAME as a separate statement at the end
+                if new_name and new_name != field_name:
+                    statements.append(
+                        self.sql_rename_field(db_table, field_name, new_name),
+                    )
 
         return statements
 
@@ -439,6 +460,9 @@ class PostgresSchemaEditor(SchemaEditor):
         For FK/O2O we require options['referenced_type'] to be one of the
         following: SmallIntField, IntField, BigIntField, UUIDField, CharField.
         """
+        if field_type in NON_SCHEMA_FIELD_TYPES:
+            msg = f"Non-schema field type leaked into schema: {field_type}"
+            raise InvalidMigrationError(msg)
         # --- Relational fields use the referenced type ----------------------
         if field_type in {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}:
             ref = options.get("referenced_type")
@@ -490,7 +514,10 @@ class PostgresSchemaEditor(SchemaEditor):
             "IntEnumField": "INTEGER",
         }
 
-        base = mapping.get(field_type, "TEXT")
+        if field_type not in mapping:
+            msg = f"Unknown field type: {field_type}"
+            raise InvalidMigrationError(msg)
+        base = mapping[field_type]
 
         # --- Auto-increment / identity for integer PKs ----------------------
         # Tortoise sets `generated=True` on integer PKs. We mirror that with

@@ -20,7 +20,8 @@ Rules:
 
 from difflib import SequenceMatcher
 
-from tortoisemarch.model_state import ProjectState
+from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.model_state import ModelState, ProjectState
 from tortoisemarch.operations import (
     AddField,
     AlterField,
@@ -30,8 +31,11 @@ from tortoisemarch.operations import (
     RemoveModel,
     RenameField,
 )
+from tortoisemarch.schema_filtering import is_schema_field_type
 
 # ----------------------------- helpers ---------------------------------
+
+FK_TYPES = {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}
 
 
 def _options_with_type(fs) -> dict:
@@ -42,14 +46,18 @@ def _options_with_type(fs) -> dict:
 
 
 def _options_for_alter(fs) -> dict:
-    # copy so we never share/mutate
-    opts = dict(fs.options)
+    """Return a complete, stable option set for AlterField diffing and rendering.
 
-    # ALWAYS include abstract type for AlterField rendering/diffing
+    Ensures the abstract field type is always present, and rehydrates
+    essential implicit defaults (e.g. CharField max_length) so that
+    ALTER statements can be generated deterministically.
+    """
+    opts = dict(fs.options)
+    # always include abstract type for AlterField rendering/diffing
     opts["type"] = fs.field_type
 
-    # If you compacted max_length away, rehydrate the default for comparison/rendering
-    # (or do Option A and enforce it earlier; but this is the diff-side guardrail)
+    # if max_length was compacted away, rehydrate the default so comparisons
+    # and SQL rendering remain deterministic
     if fs.field_type == "CharField":
         ml = opts.get("max_length")
         if ml is None:
@@ -129,6 +137,51 @@ def score_candidate(old_name: str, old_fs, new_name: str, new_fs) -> float:
     return score
 
 
+def _toposort_models_by_fk(model_states: dict[str, ModelState]) -> list[str]:
+    """Return model names ordered by foreign key dependencies.
+
+    Models are sorted so that tables referenced by foreign keys are created
+    before the tables that depend on them. Cycles are detected and rejected.
+    """
+    # Map db_table -> model_name for models in this batch
+    table_to_model = {ms.db_table.lower(): name for name, ms in model_states.items()}
+
+    deps: dict[str, set[str]] = {name: set() for name in model_states}
+    for name, ms in model_states.items():
+        for fs in ms.field_states.values():
+            if fs.field_type in FK_TYPES:
+                rt = (fs.options.get("related_table") or "").lower()
+                if rt in table_to_model:
+                    deps[name].add(table_to_model[rt])
+
+    # Kahn's algorithm for topological sorting
+    ready = sorted([n for n, ds in deps.items() if not ds])
+    out: list[str] = []
+    while ready:
+        n = ready.pop(0)
+        out.append(n)
+        for m in list(deps.keys()):
+            if n in deps[m]:
+                deps[m].remove(n)
+                if not deps[m] and m not in out and m not in ready:
+                    ready.append(m)
+                    ready.sort()
+
+    if len(out) != len(model_states):
+        cycle = [n for n, ds in deps.items() if ds]
+        msg = (
+            f"Cycle detected in CreateModel dependencies: {cycle}. "
+            "Either break the cycle (store FK on one side only) or "
+            "implement a 2-phase FK add."
+        )
+        raise InvalidMigrationError(msg)
+
+    return out
+
+
+# ----------------------------- Diff States ---------------------------------
+
+
 def diff_states(
     from_state: ProjectState,
     to_state: ProjectState,
@@ -143,14 +196,22 @@ def diff_states(
     to_models = to_state.model_states
 
     # ---- Models removed
-    for model_name in from_models.keys() - to_models.keys():
+    removed = {
+        name: from_models[name] for name in (from_models.keys() - to_models.keys())
+    }
+    ordered_removed_names = _toposort_models_by_fk(removed)
+
+    # reverse order for dropping
+    for model_name in reversed(ordered_removed_names):
         old_model = from_models[model_name]
         ops.append(RemoveModel(name=model_name, db_table=old_model.db_table))
 
     # ---- Models added
+    added = {name: to_models[name] for name in (to_models.keys() - from_models.keys())}
+    ordered_added_names = _toposort_models_by_fk(added)
+
     ops.extend(
-        CreateModel.from_model_state(to_models[model_name])
-        for model_name in to_models.keys() - from_models.keys()
+        CreateModel.from_model_state(to_models[name]) for name in ordered_added_names
     )
 
     # ---- Models changed
@@ -158,8 +219,16 @@ def diff_states(
         old_model = from_models[model_name]
         new_model = to_models[model_name]
 
-        old_fields = old_model.field_states
-        new_fields = new_model.field_states
+        old_fields = {
+            k: v
+            for k, v in old_model.field_states.items()
+            if is_schema_field_type(v.field_type)
+        }
+        new_fields = {
+            k: v
+            for k, v in new_model.field_states.items()
+            if is_schema_field_type(v.field_type)
+        }
 
         removed_names = set(old_fields.keys() - new_fields.keys())
         added_names = set(new_fields.keys() - old_fields.keys())

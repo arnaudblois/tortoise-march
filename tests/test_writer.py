@@ -1,6 +1,7 @@
 """Test for the migration writer."""
 
 from enum import StrEnum
+from pathlib import Path
 
 from tortoisemarch.operations import CreateModel
 from tortoisemarch.writer import write_migration
@@ -36,3 +37,19 @@ def test_write_migration_serializes_enum_default_to_literal(tmp_path):
     assert (
         '{"default": "active", "max_length": 16}' in code
     )  # we expect enum.value to be emitted
+
+
+def test_empty_migration_runpython_stub_is_valid(tmp_path: Path):
+    """Test that we can create an empty RunPython migration."""
+    path = Path(write_migration([], tmp_path, empty=True))
+    content = path.read_text(encoding="utf-8")
+
+    # Import present
+    assert "from tortoisemarch.operations import RunPython" in content
+
+    # Suggested invocation matches your RunPython signature
+    assert "RunPython(forwards, reverse_func=backwards)" in content
+
+    # Stub functions are present
+    assert "async def forwards():" in content
+    assert "async def backwards():" in content

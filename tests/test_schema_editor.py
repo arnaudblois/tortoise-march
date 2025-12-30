@@ -3,6 +3,7 @@
 import asyncpg
 import pytest
 
+from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.operations import (
     AddField,
     AlterField,
@@ -140,3 +141,60 @@ async def test_alter_field_nullability_and_default(schema_editor):
         assert "unknown@example.com" in (column_default or "")
     finally:
         await conn.close()
+
+
+def test_db_default_expr_is_unquoted_python_callable_is_not_emitted():
+    """Test that DB default are emitted verbatim and Python callables are ignored."""
+    ed = PostgresSchemaEditor()
+
+    fields = [
+        ("created_at", "DatetimeField", {"default": "db_default:now()"}),
+        ("id", "UUIDField", {"primary_key": True, "default": "python_callable"}),
+        ("label", "CharField", {"max_length": 10, "default": "hi"}),
+        ("flag", "BooleanField", {"default": True}),
+    ]
+
+    sql = ed.sql_create_model("t", fields)
+
+    assert '"created_at" TIMESTAMPTZ NOT NULL DEFAULT now()' in sql
+    # python_callable should not generate DEFAULT
+    frag = sql.split('"id" UUID', 1)[1].split(",", 1)[0]
+    assert "DEFAULT" not in frag
+    # string literal should be quoted
+    assert "DEFAULT 'hi'" in sql
+    assert "DEFAULT TRUE" in sql
+
+
+def test_alter_default_set_expr_and_drop_default():
+    """Test that ALTER statements set or drop DEFAULT when default values change."""
+    ed = PostgresSchemaEditor()
+
+    stmts = ed.sql_alter_field(
+        db_table="t",
+        field_name="created_at",
+        old_options={"type": "DatetimeField", "default": "python_callable"},
+        new_options={"type": "DatetimeField", "default": "db_default:now()"},
+    )
+    assert any("SET DEFAULT now()" in s for s in stmts)
+
+    stmts = ed.sql_alter_field(
+        db_table="t",
+        field_name="created_at",
+        old_options={"type": "DatetimeField", "default": "db_default:now()"},
+        new_options={"type": "DatetimeField", "default": None},
+    )
+    assert any("DROP DEFAULT" in s for s in stmts)
+
+
+def test_schema_editor_refuses_non_schema_field_types():
+    """Test that non-schema field types are rejected by the schema editor."""
+    ed = PostgresSchemaEditor()
+    with pytest.raises(InvalidMigrationError):
+        ed.sql_for_field("BackwardOneToOneRelation", {})
+
+
+def test_schema_editor_refuses_unknown_field_types():
+    """Test that unknown field types are rejected by the schema editor."""
+    ed = PostgresSchemaEditor()
+    with pytest.raises(InvalidMigrationError):
+        ed.sql_for_field("TotallyUnknownFieldType", {})

@@ -130,8 +130,8 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
     assert sql == (
         'CREATE TABLE "author" ('
         '"id" UUID PRIMARY KEY NOT NULL UNIQUE, '
-        '"name" VARCHAR(200) NOT NULL, '
-        '"is_superuser" BOOLEAN NOT NULL DEFAULT FALSE'
+        '"is_superuser" BOOLEAN NOT NULL DEFAULT FALSE, '
+        '"name" VARCHAR(200) NOT NULL'
         ");"
     )
 

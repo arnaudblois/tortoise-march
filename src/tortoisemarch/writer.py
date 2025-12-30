@@ -119,21 +119,19 @@ def write_migration(
 
     # Build operations block
     if include_runpython_stub:
-        ops_block = """
-        operations: ClassVar[list] = [
-            # Fill in the functions below, then uncomment:
-            # RunPython(forwards=forwards, backwards=backwards),
-        ]
-        """
-        stub_fns = """
-        async def forwards():
-            \"\"\"Write forward data migration using the ORM.\"\"\"
-            ...
+        ops_block = (
+            "operations: ClassVar[list] = [\n"
+            "# Fill in the functions below, then uncomment:\n"
+            "# RunPython(forwards, reverse_func=backwards),\n"
+            "]\n\n"
+            "async def forwards():\n"
+            '\t"""Write forward data migration using the ORM."""\n'
+            "\t...\n\n"
+            "async def backwards():\n"
+            '\t"""Write reverse data migration if possible. Optional."""\n'
+            "\t...\n"
+        )
 
-        async def backwards():
-            \"\"\"Write reverse data migration if possible. Optional.\"\"\"
-            ...
-        """
     else:
         lines = [f"        {op.to_code()}," for op in operations]
         ops_block = (
@@ -141,7 +139,6 @@ def write_migration(
             + ("\n".join(lines) + "\n" if lines else "")
             + "    ]\n"
         )
-        stub_fns = ""
 
     header_doc = (
         f'"""Migration {filename}.'
@@ -151,16 +148,12 @@ def write_migration(
     )
 
     migration_block = textwrap.dedent(
-        f"""
-    class Migration(BaseMigration):
-        \"\"\"Auto-generated migration.\"\"\"
-
-        {ops_block}
-    """,
+        "class Migration(BaseMigration):\n"
+        '\t"""Auto-generated migration."""\n'
+        f"\t{ops_block}",
     )
 
-    code = f"{header_doc}\n{import_block}\n{migration_block}\n{stub_fns}"
-    code = textwrap.dedent(code)
+    code = f"{header_doc}\n{import_block}\n{migration_block}"
     code = black.format_str(code, mode=black.Mode())
     path.write_text(code, encoding="utf-8")
     click.echo(f"✅ Created migration {filename}")

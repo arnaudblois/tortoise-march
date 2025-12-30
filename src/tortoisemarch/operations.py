@@ -8,11 +8,10 @@ are delegated to the active `SchemaEditor` (e.g., Postgres).
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
-from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
+from tortoisemarch.schema_filtering import compact_opts_for_code, is_schema_field_type
 
 
 def _lc(name: str) -> str:
@@ -30,55 +29,6 @@ def _changed_only(old: dict, new: dict) -> tuple[dict[str, Any], dict[str, Any]]
             old_out[k] = old.get(k)
             new_out[k] = new.get(k)
     return old_out, new_out
-
-
-def _value_for_migration_code(v: Any) -> Any:
-    """Convert runtime values to something that has a valid Python literal repr.
-
-    Policy:
-    - Enum -> its underlying .value (what we actually store in DB)
-    - callables should already be represented as 'callable' upstream
-    - containers are recursively sanitized
-    - unknown objects are rejected early (better error than Black)
-    """
-    if isinstance(v, Enum):
-        return _value_for_migration_code(v.value)
-
-    if v is None or isinstance(v, (bool, int, float, str)):
-        return v
-
-    if isinstance(v, (list, tuple)):
-        out = [_value_for_migration_code(x) for x in v]
-        return type(v)(out)
-
-    if isinstance(v, dict):
-        return {k: _value_for_migration_code(val) for k, val in v.items()}
-
-    # "callable" sentinel is fine as a string and handled by SchemaEditor
-    if v == "callable":
-        return v
-
-    msg = (
-        "Unsupported migration value for code generation: "
-        f"{v!r} (type={type(v).__name__}). "
-        "Hint: if this is an Enum, store .value. "
-        "If this is a callable default, represent it as 'callable'.",
-    )
-    raise InvalidMigrationError(msg)
-
-
-def _compact_opts_for_code(opts: dict[str, Any]) -> dict[str, Any]:
-    """Make migrations readable by removing non-meaningful opts."""
-    out: dict[str, Any] = {}
-    for k, v in opts.items():
-        if v is None:
-            continue
-        if v is False and k != "default":
-            continue
-        if v in ({}, [], ()):
-            continue
-        out[k] = _value_for_migration_code(v)
-    return out
 
 
 class Operation(ABC):
@@ -138,10 +88,17 @@ class CreateModel(Operation):
     @classmethod
     def from_model_state(cls, model_state: ModelState) -> "CreateModel":
         """Set up the CreateModel operation from a ModelState."""
-        fields: list[tuple[str, str, dict[str, Any]]] = [
-            (fs.name, fs.field_type, _compact_opts_for_code(dict(fs.options)))
-            for fs in model_state.field_states.values()
-        ]
+        fields: list[tuple[str, str, dict[str, Any]]] = []
+        # sort for deterministic output
+        for fs in sorted(
+            model_state.field_states.values(),
+            key=lambda x: x.name.lower(),
+        ):
+            if not is_schema_field_type(fs.field_type):
+                continue
+            fields.append(
+                (fs.name, fs.field_type, compact_opts_for_code(dict(fs.options))),
+            )
         return cls(name=model_state.name, db_table=model_state.db_table, fields=fields)
 
     def mutate_state(self, state: ProjectState) -> None:
@@ -163,7 +120,7 @@ class CreateModel(Operation):
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
         safe_fields = [
-            (name, ftype, _compact_opts_for_code(dict(opts)))
+            (name, ftype, compact_opts_for_code(dict(opts)))
             for (name, ftype, opts) in self.fields
         ]
         return (
@@ -257,7 +214,7 @@ class AddField(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
-        opts = _compact_opts_for_code(dict(self.options))
+        opts = compact_opts_for_code(dict(self.options))
         return (
             f"AddField(model_name={self.model_name!r}, "
             f"db_table={self.db_table!r}, "
