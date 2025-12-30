@@ -8,8 +8,10 @@ are delegated to the active `SchemaEditor` (e.g., Postgres).
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
+from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 
 
@@ -30,6 +32,41 @@ def _changed_only(old: dict, new: dict) -> tuple[dict[str, Any], dict[str, Any]]
     return old_out, new_out
 
 
+def _value_for_migration_code(v: Any) -> Any:
+    """Convert runtime values to something that has a valid Python literal repr.
+
+    Policy:
+    - Enum -> its underlying .value (what we actually store in DB)
+    - callables should already be represented as 'callable' upstream
+    - containers are recursively sanitized
+    - unknown objects are rejected early (better error than Black)
+    """
+    if isinstance(v, Enum):
+        return _value_for_migration_code(v.value)
+
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+
+    if isinstance(v, (list, tuple)):
+        out = [_value_for_migration_code(x) for x in v]
+        return type(v)(out)
+
+    if isinstance(v, dict):
+        return {k: _value_for_migration_code(val) for k, val in v.items()}
+
+    # "callable" sentinel is fine as a string and handled by SchemaEditor
+    if v == "callable":
+        return v
+
+    msg = (
+        "Unsupported migration value for code generation: "
+        f"{v!r} (type={type(v).__name__}). "
+        "Hint: if this is an Enum, store .value. "
+        "If this is a callable default, represent it as 'callable'.",
+    )
+    raise InvalidMigrationError(msg)
+
+
 def _compact_opts_for_code(opts: dict[str, Any]) -> dict[str, Any]:
     """Make migrations readable by removing non-meaningful opts."""
     out: dict[str, Any] = {}
@@ -40,7 +77,7 @@ def _compact_opts_for_code(opts: dict[str, Any]) -> dict[str, Any]:
             continue
         if v in ({}, [], ()):
             continue
-        out[k] = v
+        out[k] = _value_for_migration_code(v)
     return out
 
 
@@ -125,10 +162,14 @@ class CreateModel(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
+        safe_fields = [
+            (name, ftype, _compact_opts_for_code(dict(opts)))
+            for (name, ftype, opts) in self.fields
+        ]
         return (
             f"CreateModel(name={self.name!r}, "
             f"db_table={self.db_table!r}, "
-            f"fields={self.fields!r})"
+            f"fields={safe_fields!r})"
         )
 
 
