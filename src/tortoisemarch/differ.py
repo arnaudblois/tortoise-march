@@ -30,8 +30,9 @@ from tortoisemarch.operations import (
     RemoveField,
     RemoveModel,
     RenameField,
+    RenameModel,
 )
-from tortoisemarch.schema_filtering import is_schema_field_type, FK_TYPES
+from tortoisemarch.schema_filtering import FK_TYPES, is_schema_field_type
 
 # ----------------------------- helpers ---------------------------------
 
@@ -81,6 +82,107 @@ def _base_name(n: str) -> str:
 def _name_similarity(a: str, b: str) -> float:
     """Return a name similarity ratio in [0, 1]."""
     return SequenceMatcher(None, _base_name(a), _base_name(b)).ratio()
+
+
+def _table_similarity(a: str, b: str) -> float:
+    """Return a similarity score for DB table names in [0, 1]."""
+    return _name_similarity(a, b)
+
+
+def _schema_fields(ms: ModelState) -> dict:
+    """Return schema-relevant FieldStates for a model."""
+    return {
+        k: v for k, v in ms.field_states.items() if is_schema_field_type(v.field_type)
+    }
+
+
+def _pk_field(ms: ModelState):
+    """Return the primary key FieldState for a model, if present."""
+    for fs in _schema_fields(ms).values():
+        if fs.options.get("primary_key"):
+            return fs
+    return None
+
+
+def _model_rename_score(old_ms: ModelState, new_ms: ModelState) -> float:
+    """Compute a similarity score indicating if two models are likely the same."""
+    old_fields = _schema_fields(old_ms)
+    new_fields = _schema_fields(new_ms)
+
+    if not old_fields or not new_fields:
+        return 0.0
+
+    # Strict matching on (normalized field key + type) for now.
+    matches = 0
+    for k, old_fs in old_fields.items():
+        new_fs = new_fields.get(k)
+        if new_fs and new_fs.field_type == old_fs.field_type:
+            matches += 1
+
+    overlap = matches / max(len(old_fields), len(new_fields))
+
+    score = overlap
+
+    # Strong signal: same PK type
+    old_pk = _pk_field(old_ms)
+    new_pk = _pk_field(new_ms)
+    if old_pk and new_pk and old_pk.field_type == new_pk.field_type:
+        score += 0.2
+
+    # Mild signal: same number of schema fields
+    if len(old_fields) == len(new_fields):
+        score += 0.1
+
+    # Table-name similarity helps catch renames even if some fields diverged.
+    score += 0.2 * _table_similarity(old_ms.db_table, new_ms.db_table)
+
+    # Cap at 1.0
+    return min(score, 1.0)
+
+
+def _detect_model_renames(  # noqa: C901
+    removed: dict[str, ModelState],
+    added: dict[str, ModelState],
+    *,
+    threshold: float = 0.90,
+) -> list[tuple[str, str]]:
+    """Return (old_name, new_name) pairs that look like model renames.
+
+    We compute best match each way, then keep only mutual-best pairs
+    above threshold.
+    """
+    best_for_old: dict[str, tuple[str, float]] = {}
+    best_for_new: dict[str, tuple[str, float]] = {}
+
+    for old_name, old_ms in removed.items():
+        best = ("", 0.0)
+        for new_name, new_ms in added.items():
+            s = _model_rename_score(old_ms, new_ms)
+            if s > best[1]:
+                best = (new_name, s)
+        if best[0]:
+            best_for_old[old_name] = best
+
+    for new_name, new_ms in added.items():
+        best = ("", 0.0)
+        for old_name, old_ms in removed.items():
+            s = _model_rename_score(old_ms, new_ms)
+            if s > best[1]:
+                best = (old_name, s)
+        if best[0]:
+            best_for_new[new_name] = best
+
+    pairs: list[tuple[str, str]] = []
+    for old_name, (new_name, s) in best_for_old.items():
+        if s < threshold:
+            continue
+        back = best_for_new.get(new_name)
+        if back and back[0] == old_name and back[1] >= threshold:
+            pairs.append((old_name, new_name))
+
+    # Stable order for deterministic migrations
+    pairs.sort(key=lambda t: (t[0].lower(), t[1].lower()))
+    return pairs
 
 
 def score_candidate(old_name: str, old_fs, new_name: str, new_fs) -> float:
@@ -177,6 +279,98 @@ def _toposort_models_by_fk(model_states: dict[str, ModelState]) -> list[str]:
 
 
 # ----------------------------- Diff States ---------------------------------
+def _diff_model_fields(
+    ops: list[Operation],
+    *,
+    old_model: ModelState,
+    new_model: ModelState,
+    model_name: str,
+    rename_map: dict[str, str] | None,
+) -> None:
+    """Append field operations to transform old_model -> new_model."""
+    rename_map = rename_map or {}
+
+    old_fields = _schema_fields(old_model)
+    new_fields = _schema_fields(new_model)
+
+    removed_names = set(old_fields.keys() - new_fields.keys())
+    added_names = set(new_fields.keys() - old_fields.keys())
+
+    # Apply user-confirmed renames first
+    for old_name, new_name in list(rename_map.items()):
+        if old_name in removed_names and new_name in added_names:
+            old_fs = old_fields[old_name]
+            new_fs = new_fields[new_name]
+
+            if _same_except_name(old_fs, new_fs):
+                ops.append(
+                    RenameField(
+                        model_name=model_name,
+                        db_table=new_model.db_table,
+                        old_name=old_name,
+                        new_name=new_name,
+                    ),
+                )
+            else:
+                ops.append(
+                    AlterField(
+                        model_name=model_name,
+                        db_table=new_model.db_table,
+                        field_name=old_name,
+                        old_options=_options_for_alter(old_fs),
+                        new_options=_options_for_alter(new_fs),
+                        new_name=new_name,
+                    ),
+                )
+
+            removed_names.remove(old_name)
+            added_names.remove(new_name)
+        # else: ignore invalid pairs silently
+
+    # Remaining removed -> RemoveField
+    ops.extend(
+        RemoveField(
+            model_name=model_name,
+            db_table=new_model.db_table,
+            field_name=fname,
+        )
+        for fname in sorted(removed_names)
+    )
+
+    # Remaining added -> AddField
+    for fname in sorted(added_names):
+        fs = new_fields[fname]
+        ops.append(
+            AddField(
+                model_name=model_name,
+                db_table=new_model.db_table,
+                field_name=fs.name,
+                field_type=fs.field_type,
+                options=fs.options,
+            ),
+        )
+
+    # Unchanged names but modified attributes -> AlterField
+    for fname in sorted(old_fields.keys() & new_fields.keys()):
+        old_fs = old_fields[fname]
+        new_fs = new_fields[fname]
+
+        old_opts = _options_for_alter(old_fs)
+        new_opts = _options_for_alter(new_fs)
+
+        if old_opts != new_opts:
+            ops.append(
+                AlterField(
+                    model_name=model_name,
+                    db_table=new_model.db_table,
+                    field_name=fname,
+                    old_options=old_opts,
+                    new_options=new_opts,
+                ),
+            )
+
+
+# ----------------------------- Diff States ---------------------------------
 
 
 def diff_states(
@@ -192,117 +386,64 @@ def diff_states(
     from_models = from_state.model_states
     to_models = to_state.model_states
 
-    # ---- Models removed
-    removed = {
+    # ---- Identify removed/added models first
+    removed: dict[str, ModelState] = {
         name: from_models[name] for name in (from_models.keys() - to_models.keys())
     }
-    ordered_removed_names = _toposort_models_by_fk(removed)
+    added: dict[str, ModelState] = {
+        name: to_models[name] for name in (to_models.keys() - from_models.keys())
+    }
 
-    # reverse order for dropping
-    for model_name in reversed(ordered_removed_names):
-        old_model = from_models[model_name]
-        ops.append(RemoveModel(name=model_name, db_table=old_model.db_table))
+    # ---- Detect model renames and emit RenameModel first
+    model_renames = _detect_model_renames(removed, added)
 
-    # ---- Models added
-    added = {name: to_models[name] for name in (to_models.keys() - from_models.keys())}
-    ordered_added_names = _toposort_models_by_fk(added)
-
-    ops.extend(
-        CreateModel.from_model_state(to_models[name]) for name in ordered_added_names
-    )
-
-    # ---- Models changed
-    for model_name in from_models.keys() & to_models.keys():
-        old_model = from_models[model_name]
-        new_model = to_models[model_name]
-
-        old_fields = {
-            k: v
-            for k, v in old_model.field_states.items()
-            if is_schema_field_type(v.field_type)
-        }
-        new_fields = {
-            k: v
-            for k, v in new_model.field_states.items()
-            if is_schema_field_type(v.field_type)
-        }
-
-        removed_names = set(old_fields.keys() - new_fields.keys())
-        added_names = set(new_fields.keys() - old_fields.keys())
-
-        # Apply user-confirmed renames first
-        confirmed = rename_map.get(model_name, {})
-        for old_name, new_name in list(confirmed.items()):
-            if old_name in removed_names and new_name in added_names:
-                old_fs = old_fields[old_name]
-                new_fs = new_fields[new_name]
-
-                if _same_except_name(old_fs, new_fs):
-                    # Pure rename
-                    ops.append(
-                        RenameField(
-                            model_name=model_name,
-                            db_table=new_model.db_table,
-                            old_name=old_name,
-                            new_name=new_name,
-                        ),
-                    )
-                else:
-                    # Rename + attribute changes
-                    ops.append(
-                        AlterField(
-                            model_name=model_name,
-                            db_table=new_model.db_table,
-                            field_name=old_name,
-                            old_options=_options_for_alter(old_fs),
-                            new_options=_options_for_alter(new_fs),
-                            new_name=new_name,
-                        ),
-                    )
-                removed_names.remove(old_name)
-                added_names.remove(new_name)
-            # else: silently ignore invalid pairs
-
-        # Remaining removed -> RemoveField
-        ops.extend(
-            RemoveField(
-                model_name=model_name,
-                db_table=new_model.db_table,
-                field_name=fname,
-            )
-            for fname in sorted(removed_names)
+    for old_name, new_name in model_renames:
+        old_ms = removed.pop(old_name)
+        new_ms = added.pop(new_name)
+        ops.append(
+            RenameModel(
+                old_name=old_name,
+                new_name=new_name,
+                old_db_table=old_ms.db_table,
+                new_db_table=new_ms.db_table,
+            ),
         )
 
-        # Remaining added -> AddField
-        for fname in sorted(added_names):
-            fs = new_fields[fname]
-            ops.append(
-                AddField(
-                    model_name=model_name,
-                    db_table=new_model.db_table,
-                    field_name=fs.name,
-                    field_type=fs.field_type,
-                    options=fs.options,
-                ),
-            )
+    # ---- Models removed (after removing rename-pairs)
+    ordered_removed_names = _toposort_models_by_fk(removed)
+    for model_name in reversed(ordered_removed_names):
+        old_model = removed[model_name]
+        ops.append(RemoveModel(name=model_name, db_table=old_model.db_table))
 
-        # Unchanged names but modified attributes -> AlterField
-        for fname in sorted(old_fields.keys() & new_fields.keys()):
-            old_fs = old_fields[fname]
-            new_fs = new_fields[fname]
+    # ---- Models added (after removing rename-pairs)
+    ordered_added_names = _toposort_models_by_fk(added)
+    ops.extend(
+        CreateModel.from_model_state(added[name]) for name in ordered_added_names
+    )
 
-            old_opts = _options_for_alter(old_fs)
-            new_opts = _options_for_alter(new_fs)
+    # ---- Models changed (same name in both)
+    for model_name in sorted(from_models.keys() & to_models.keys()):
+        _diff_model_fields(
+            ops,
+            old_model=from_models[model_name],
+            new_model=to_models[model_name],
+            model_name=model_name,
+            rename_map=rename_map.get(model_name),
+        )
 
-            if old_opts != new_opts:
-                ops.append(
-                    AlterField(
-                        model_name=model_name,
-                        db_table=new_model.db_table,
-                        field_name=fname,
-                        old_options=old_opts,
-                        new_options=new_opts,
-                    ),
-                )
+    # ---- Renamed models may also have field changes
+    for old_name, new_name in model_renames:
+        old_model = from_models[old_name]
+        new_model = to_models[new_name]
+
+        # Allow user to key rename_map by either old or new model name.
+        confirmed = rename_map.get(new_name) or rename_map.get(old_name) or {}
+        _diff_model_fields(
+            ops,
+            old_model=old_model,
+            new_model=new_model,
+            model_name=new_name,
+            rename_map=confirmed,
+        )
 
     return ops

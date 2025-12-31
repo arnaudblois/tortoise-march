@@ -7,8 +7,8 @@ and filtering out non-schema field types.
 from enum import Enum
 from typing import Any
 
-from tortoisemarch.model_state import FieldState
 from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.model_state import FieldState
 
 FK_TYPES = {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}
 
@@ -74,7 +74,7 @@ def is_schema_field_type(field_type: str) -> bool:
     return field_type not in NON_SCHEMA_FIELD_TYPES
 
 
-def column_sort_key(fs: FieldState) -> tuple[int, int, str]:
+def column_sort_key(fs: FieldState) -> tuple[int, int, str]:  # noqa: PLR0911
     """Return a stable, human-friendly sort key for CreateModel column ordering."""
     col = (fs.options.get("db_column") or fs.name).lower()
 

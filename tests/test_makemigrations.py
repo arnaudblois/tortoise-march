@@ -245,3 +245,80 @@ async def test_makemigrations_emits_renamefield_for_manual_rename(
     assert "AddField" in mig_text
     assert "RemoveField" in mig_text
     assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+
+
+async def test_makemigrations_emits_renamemodel_for_model_rename(
+    tmp_path,
+    snapshot,
+):
+    """Makemigrations emits RenameModel instead of drop/create for model renames."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    def write_models(code: str) -> None:
+        """Write models module and clear import caches."""
+        (models_dir / "__init__.py").write_text(textwrap.dedent(code))
+        pycache = models_dir / "__pycache__"
+        if pycache.exists():
+            for f in pycache.glob("__init__.*.pyc"):
+                f.unlink()
+        if "models" in sys.modules:
+            del sys.modules["models"]
+
+    # Step 1: initial models
+    write_models(
+        """
+        from tortoise import fields, models
+
+        class Author(models.Model):
+            id = fields.IntField(primary_key=True)
+            name = fields.CharField(max_length=100)
+
+        class Book(models.Model):
+            id = fields.IntField(primary_key=True)
+            author = fields.ForeignKeyField(
+                "models.Author",
+                related_name="books",
+                null=True,
+            )
+        """,
+    )
+    await run_makemigrations(migrations_dir)
+
+    # Step 2: rename Author -> Writer
+    write_models(
+        """
+        from tortoise import fields, models
+
+        class Writer(models.Model):
+            id = fields.IntField(primary_key=True)
+            name = fields.CharField(max_length=100)
+
+        class Book(models.Model):
+            id = fields.IntField(primary_key=True)
+            author = fields.ForeignKeyField(
+                "models.Writer",
+                related_name="books",
+                null=True,
+            )
+        """,
+    )
+    await run_makemigrations(migrations_dir)
+
+    mig_text = newest_migration_text(migrations_dir)
+
+    assert "RenameModel" in mig_text
+
+    flat = mig_text.replace("\n", "").replace(" ", "")
+    assert "RenameModel(" in flat
+    assert "old_name='Author'" in flat or 'old_name="Author"' in flat
+    assert "new_name='Writer'" in flat or 'new_name="Writer"' in flat
+
+    # Ignore timestamp line for snapshot stability
+    assert "\n".join(mig_text.split("\n")[1:]) == snapshot

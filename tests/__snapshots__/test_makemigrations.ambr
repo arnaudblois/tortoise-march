@@ -42,6 +42,43 @@
   
   '''
 # ---
+# name: test_makemigrations_emits_renamemodel_for_model_rename
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import AlterField, RenameModel
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          RenameModel(
+              old_name="Author",
+              new_name="Writer",
+              old_db_table="author",
+              new_db_table="writer",
+          ),
+          AlterField(
+              model_name="Book",
+              db_table="book",
+              field_name="author",
+              old_options={
+                  "related_model": "models.Author",
+                  "related_table": "author",
+                  "type": "ForeignKeyFieldInstance",
+              },
+              new_options={
+                  "related_model": "models.Writer",
+                  "related_table": "writer",
+                  "type": "ForeignKeyFieldInstance",
+              },
+          ),
+      ]
+  
+  '''
+# ---
 # name: test_makemigrations_integration
   '''
   

@@ -3,7 +3,7 @@
 from enum import StrEnum
 from pathlib import Path
 
-from tortoisemarch.operations import CreateModel
+from tortoisemarch.operations import CreateModel, RenameModel
 from tortoisemarch.writer import write_migration
 
 
@@ -53,3 +53,24 @@ def test_empty_migration_runpython_stub_is_valid(tmp_path: Path):
     # Stub functions are present
     assert "async def forwards():" in content
     assert "async def backwards():" in content
+
+
+def test_auto_name_includes_rename_model(tmp_path: Path):
+    """Test that default migration name includes RenameModel operations."""
+    # Simulate an existing initial migration so numbering starts at 0002.
+    (tmp_path / "__init__.py").touch()
+    (tmp_path / "0001_initial.py").write_text("# initial\n", encoding="utf-8")
+
+    ops = [
+        RenameModel(
+            old_name="CompanyUser",
+            new_name="CompanyMember",
+            old_db_table="company_user",
+            new_db_table="company_member",
+        ),
+    ]
+
+    out_path = write_migration(ops, migrations_dir=tmp_path)
+    fname = Path(out_path).name
+
+    assert fname.startswith("0002_rename_companyuser_to_companymember")

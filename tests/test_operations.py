@@ -8,7 +8,9 @@ from tortoisemarch.operations import (
     RemoveField,
     RemoveModel,
     RenameField,
+    RenameModel,
 )
+from tortoisemarch.schema_editor import PostgresSchemaEditor
 
 
 def model(
@@ -255,3 +257,111 @@ def test_to_code_is_stringy():
         s = op.to_code()
         assert isinstance(s, str)
         assert s.strip()  # non-empty
+
+
+def test_alter_field_to_code_orders_changed_opts():
+    """AlterField.to_code should emit deterministically ordered option dicts."""
+    op = AlterField(
+        "Book",
+        "book",
+        "author",
+        {"related_table": "author", "type": "ForeignKeyFieldInstance"},
+        {
+            "related_model": "models.Writer",
+            "related_table": "writer",
+            "type": "ForeignKeyFieldInstance",
+        },
+    )
+
+    code = op.to_code()
+
+    expected = (
+        "AlterField(model_name='Book', db_table='book', field_name='author', "
+        "old_options={'related_table': 'author', 'type': 'ForeignKeyFieldInstance'}, "
+        "new_options={'related_model': 'models.Writer', 'related_table': 'writer', "
+        "'type': 'ForeignKeyFieldInstance'})"
+    )
+    assert code == expected
+
+
+# ------- Test RenameModel --------------------------------------------------
+
+
+async def test_renamemodel_to_sql_emits_table_rename():
+    """RenameModel renders ALTER TABLE when db_table changes."""
+    editor = PostgresSchemaEditor()
+
+    op = RenameModel(
+        old_name="Author",
+        new_name="Writer",
+        old_db_table="author",
+        new_db_table="writer",
+    )
+
+    sql = await op.to_sql(conn=None, schema_editor=editor)
+
+    assert sql == ['ALTER TABLE "author" RENAME TO "writer"']
+
+
+async def test_renamemodel_to_sql_noop_when_table_unchanged():
+    """RenameModel renders no SQL when only the model name changes."""
+    editor = PostgresSchemaEditor()
+
+    op = RenameModel(
+        old_name="Author",
+        new_name="Writer",
+        old_db_table="author",
+        new_db_table="author",
+    )
+
+    sql = await op.to_sql(conn=None, schema_editor=editor)
+
+    assert sql == []
+
+
+def test_renamemodel_mutate_state_renames_model_and_updates_fk_metadata():
+    """RenameModel updates ProjectState and rewrites FK related_table."""
+    author = ModelState(
+        name="Author",
+        db_table="author",
+        field_states={
+            "id": FieldState(name="id", field_type="IntField", primary_key=True),
+            "name": FieldState(name="name", field_type="CharField", max_length=100),
+        },
+    )
+
+    book = ModelState(
+        name="Book",
+        db_table="book",
+        field_states={
+            "id": FieldState(name="id", field_type="IntField", primary_key=True),
+            "author": FieldState(
+                name="author",
+                field_type="ForeignKeyField",
+                related_table="author",
+                to_field="id",
+                null=True,
+            ),
+        },
+    )
+
+    state = ProjectState(model_states={"Author": author, "Book": book})
+
+    op = RenameModel(
+        old_name="Author",
+        new_name="Writer",
+        old_db_table="author",
+        new_db_table="writer",
+    )
+
+    op.mutate_state(state)
+
+    assert "Author" not in state.model_states
+    assert "Writer" in state.model_states
+
+    writer = state.model_states["Writer"]
+    assert writer.name == "Writer"
+    assert writer.db_table == "writer"
+
+    fk = state.model_states["Book"].field_states["author"]
+    assert fk.options["related_table"] == "writer"

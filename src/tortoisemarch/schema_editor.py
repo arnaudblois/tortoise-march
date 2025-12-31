@@ -21,7 +21,7 @@ from typing import Any
 from tortoise import BaseDBAsyncClient
 
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.schema_filtering import NON_SCHEMA_FIELD_TYPES, FK_TYPES
+from tortoisemarch.schema_filtering import FK_TYPES, NON_SCHEMA_FIELD_TYPES
 
 PY_CALLABLE_SENTINELS = {"callable", "python_callable", "callable_handled_by_python"}
 
@@ -100,6 +100,10 @@ class SchemaEditor(ABC):
     ) -> None:
         """Rename a column."""
 
+    @abstractmethod
+    async def rename_model(self, conn, old_table: str, new_table: str) -> None:
+        """Rename a table backing a model."""
+
     # ------------ RENDERING API (returns SQL strings only) ------------
 
     @abstractmethod
@@ -113,6 +117,10 @@ class SchemaEditor(ABC):
         fields: list[tuple[str, str, dict[str, Any]]],
     ) -> str:
         """Return SQL to create a table."""
+
+    @abstractmethod
+    def sql_rename_model(self, old_table: str, new_table: str) -> str:
+        """Return SQL to rename a table."""
 
     @abstractmethod
     def sql_drop_model(self, db_table: str) -> str:
@@ -162,6 +170,7 @@ class PostgresSchemaEditor(SchemaEditor):
         return f'"{name}"'
 
     def _render_default_sql(self, default: Any) -> str | None:
+        """Render a Python default value to a PostgreSQL literal, if possible."""
         if default is None:
             return None
         if isinstance(default, str) and default in PY_CALLABLE_SENTINELS:
@@ -259,6 +268,10 @@ class PostgresSchemaEditor(SchemaEditor):
         cols = [self._column_def(name, ftype, opts) for name, ftype, opts in fields]
         col_sql = ", ".join(cols)
         return f"CREATE TABLE {self._q_ident(db_table.lower())} ({col_sql});"
+
+    def sql_rename_model(self, old_table: str, new_table: str) -> str:
+        """Return the SQL to rename a model's backing table."""
+        return f'ALTER TABLE "{old_table}" RENAME TO "{new_table}"'
 
     def sql_drop_model(self, db_table: str) -> str:
         """Write the SQL to drop a model."""
@@ -393,6 +406,11 @@ class PostgresSchemaEditor(SchemaEditor):
     ) -> None:
         """Execute the SQL to create a model."""
         sql = self.sql_create_model(db_table, fields)
+        await self._execute(conn, sql)
+
+    async def rename_model(self, conn, old_table: str, new_table: str) -> None:
+        """Execute the SQL to rename a model."""
+        sql = self.sql_rename_model(old_table=old_table, new_table=new_table)
         await self._execute(conn, sql)
 
     async def drop_model(self, conn: BaseDBAsyncClient, db_table: str) -> None:

@@ -12,20 +12,20 @@ from typing import Any
 
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 from tortoisemarch.schema_filtering import (
+    column_sort_key,
     compact_opts_for_code,
     is_schema_field_type,
-    column_sort_key,
 )
 
 
 def _lc(name: str) -> str:
-    """Normalize a field name key for field_states."""
+    """Return a normalized key for field_states lookup."""
     return name.lower()
 
 
 def _changed_only(old: dict, new: dict) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Return Python code to recreate this operation."""
-    keys = set(old) | set(new)
+    """Return key/value pairs that differ between two option dicts."""
+    keys = sorted(set(old) | set(new))
     old_out: dict[str, Any] = {}
     new_out: dict[str, Any] = {}
     for k in keys:
@@ -131,6 +131,71 @@ class CreateModel(Operation):
             f"CreateModel(name={self.name!r}, "
             f"db_table={self.db_table!r}, "
             f"fields={safe_fields!r})"
+        )
+
+
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RenameModel(Operation):
+    """Rename a model and its underlying table (if needed).
+
+    This operation updates:
+    - the ProjectState key (old model name -> new model name)
+    - the ModelState.name
+    - the ModelState.db_table
+    - FK metadata in other models that points to the renamed table/model
+    """
+
+    old_name: str
+    new_name: str
+    old_db_table: str
+    new_db_table: str
+
+    async def apply(self, conn, schema_editor) -> None:
+        """Rename the table (and logically the model)."""
+        # If only the model name changed but table stayed the same,
+        # this is a no-op in SQL.
+        if self.old_db_table != self.new_db_table:
+            await schema_editor.rename_model(conn, self.old_db_table, self.new_db_table)
+
+    async def unapply(self, conn, schema_editor) -> None:
+        """Revert the rename."""
+        if self.old_db_table != self.new_db_table:
+            await schema_editor.rename_model(conn, self.new_db_table, self.old_db_table)
+
+    async def to_sql(self, conn, schema_editor) -> list[str]:
+        """Return SQL to rename the underlying table, if required."""
+        _ = conn
+        if self.old_db_table == self.new_db_table:
+            return []
+        return [schema_editor.sql_rename_model(self.old_db_table, self.new_db_table)]
+
+    def mutate_state(self, state: ProjectState) -> None:
+        """Update ProjectState to reflect this model + table rename."""
+        ms = state.model_states.pop(self.old_name)
+
+        state.model_states[self.new_name] = ModelState(
+            name=self.new_name,
+            db_table=self.new_db_table,
+            field_states=ms.field_states,
+        )
+
+        # Rewrite FK metadata across all models.
+        for other in state.model_states.values():
+            for fs in other.field_states.values():
+                if getattr(fs, "related_table", None) == self.old_db_table:
+                    fs.related_table = self.new_db_table
+
+                if getattr(fs, "related_model", None) == self.old_name:
+                    fs.related_model = self.new_name
+
+    def to_code(self) -> str:
+        """Return Python code to recreate this operation."""
+        return (
+            f"RenameModel(old_name={self.old_name!r}, new_name={self.new_name!r}, "
+            f"old_db_table={self.old_db_table!r}, new_db_table={self.new_db_table!r})"
         )
 
 
@@ -359,6 +424,7 @@ class AlterField(Operation):
 
         # Never compact away 'type' (and keep max_length if CharField)
         def _compact(d: dict) -> dict:
+            """Compact options while preserving required type metadata."""
             keep = {"type"}
             if d.get("type") == "CharField":
                 keep.add("max_length")

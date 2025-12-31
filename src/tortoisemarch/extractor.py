@@ -13,8 +13,8 @@ from tortoise import Model, Tortoise, fields
 from tortoise.fields.data import CharEnumFieldInstance, IntEnumFieldInstance
 
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.schema_filtering import FK_TYPES
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
+from tortoisemarch.schema_filtering import FK_TYPES
 
 # ------------------------------- helpers --------------------------------
 
