@@ -184,6 +184,40 @@ def test_diff_states_emits_alterfield_for_charfield_length_even_if_compacted():
     assert alters[0].new_options["max_length"] == 300  # noqa: PLR2004
 
 
+def test_fk_defaults_normalized_to_avoid_spurious_alter():
+    """Missing implicit FK defaults should not trigger an AlterField diff."""
+    old = project(
+        {
+            "Invitation": model(
+                "Invitation",
+                [
+                    ("membership", "OneToOneFieldInstance", {}),
+                ],
+            ),
+        },
+    )
+    new = project(
+        {
+            "Invitation": model(
+                "Invitation",
+                [
+                    (
+                        "membership",
+                        "OneToOneFieldInstance",
+                        {
+                            "db_column": "membership_id",
+                            "on_delete": "CASCADE",
+                            "to_field": "id",
+                        },
+                    ),
+                ],
+            ),
+        },
+    )
+    ops = diff_states(old, new)
+    assert not any(isinstance(op, AlterField) for op in ops)
+
+
 def test_detects_model_rename_with_custom_table_name():
     """Renaming a model + table should emit RenameModel, not drop/create."""
     shared_fields = [

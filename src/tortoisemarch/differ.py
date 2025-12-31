@@ -55,6 +55,20 @@ def _options_for_alter(fs) -> dict:
     # always include abstract type for AlterField rendering/diffing
     opts["type"] = fs.field_type
 
+    # For relational fields, fill in implicit defaults so missing keys
+    # don't produce spurious alters when comparing to explicit options.
+    if fs.field_type in FK_TYPES:
+        # Default DB column name follows Tortoise conventions.
+        opts["db_column"] = opts.get("db_column") or f"{fs.name}_id"
+        opts["to_field"] = opts.get("to_field") or "id"
+        # Tortoise defaults to CASCADE if not provided.
+        opts["on_delete"] = opts.get("on_delete") or "CASCADE"
+        # referenced_type may be None if unresolved; keep it stable.
+        opts.setdefault("referenced_type", None)
+        if fs.field_type == "OneToOneFieldInstance":
+            # One-to-one implies uniqueness even if not explicitly set.
+            opts["unique"] = True
+
     # if max_length was compacted away, rehydrate the default so comparisons
     # and SQL rendering remain deterministic
     if fs.field_type == "CharField":
