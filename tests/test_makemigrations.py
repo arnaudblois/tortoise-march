@@ -22,10 +22,10 @@ def newest_migration_text(migrations_dir) -> str:
 
 async def run_makemigrations(migrations_dir) -> None:
     """Ensure (re)import of models for Tortoise before calling makemigrations."""
+    # Always reload models from disk to avoid stale class attributes after renames.
     if "models" in sys.modules:
-        importlib.reload(sys.modules["models"])
-    else:
-        importlib.import_module("models")
+        del sys.modules["models"]
+    importlib.import_module("models")
 
     await Tortoise._reset_apps()  # noqa: SLF001
     tortoise_orm = {
@@ -38,12 +38,13 @@ async def run_makemigrations(migrations_dir) -> None:
 
 
 @pytest.mark.asyncio
-async def test_makemigrations_integration(tmp_path: Path, snapshot):
+async def test_makemigrations_integration(tmp_path: Path, snapshot):  # noqa: PLR0915
     """Integration test simulating a sequence of model evolutions.
 
     1) Create Book model.
     2) Add Author model (without 'active' field).
     3) Add 'active' field to Author.
+    4) Rename Author to Writer and add an index.
 
     Asserts:
       - migration files count after each step (includes __init__.py)
@@ -162,6 +163,44 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
     assert "AddField(" in mig_text.replace("\n", "").replace(" ", "")
     assert 'model_name="Author"' in mig_text
     assert 'field_name="active"' in mig_text
+
+    # --- Step 4: Rename Author -> Writer and add Meta index -----------------
+    model_code_4 = textwrap.dedent(
+        """
+        from tortoise import fields, models
+
+        class PrimaryKeyField(fields.UUIDField):
+            def __init__(self, **kwargs):
+                kwargs.setdefault("primary_key", True)
+                super().__init__(**kwargs)
+
+        class Book(models.Model):
+            id = PrimaryKeyField()
+            title = fields.CharField(max_length=100)
+
+        class Writer(models.Model):
+            id = fields.IntField(primary_key=True)
+            name = fields.CharField(max_length=100)
+            active = fields.BooleanField(default=True)
+
+            class Meta:
+                table = "writer"
+                indexes = (("name",),)
+    """,
+    )
+    write_models(model_code_4)
+    await asyncio.sleep(0)
+    await run_makemigrations(migrations_dir)
+
+    all_py_names = {str(x).split("/")[-1] for x in migrations_dir.glob("*.py")}
+    assert any("rename_author_to_writer" in name for name in all_py_names)
+
+    mig_text = newest_migration_text(migrations_dir)
+    flat = mig_text.replace(" ", "").replace("\n", "")
+    assert "RenameModel(" in mig_text
+    assert "CreateIndex" in mig_text
+    assert 'columns=("name",)' in flat
+    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
 
 
 @pytest.mark.asyncio
@@ -319,6 +358,50 @@ async def test_makemigrations_emits_renamemodel_for_model_rename(
     assert "RenameModel(" in flat
     assert "old_name='Author'" in flat or 'old_name="Author"' in flat
     assert "new_name='Writer'" in flat or 'new_name="Writer"' in flat
+    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+
+
+@pytest.mark.asyncio
+async def test_makemigrations_emits_createindex_for_meta_indexes(
+    tmp_path: Path,
+    snapshot,
+):
+    """Meta-level indexes should generate CreateIndex operations."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").touch()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    def write_models(code: str) -> None:
+        (models_dir / "__init__.py").write_text(textwrap.dedent(code))
+        pycache = models_dir / "__pycache__"
+        if pycache.exists():
+            for f in pycache.glob("__init__.*.pyc"):
+                f.unlink()
+        if "models" in sys.modules:
+            del sys.modules["models"]
+
+    write_models(
+        """
+        from tortoise import fields, models
+
+        class Book(models.Model):
+            id = fields.IntField(primary_key=True)
+            slug = fields.CharField(max_length=50)
+
+            class Meta:
+                indexes = (("slug", "id"),)
+        """,
+    )
+
+    await run_makemigrations(migrations_dir)
+    mig_text = newest_migration_text(migrations_dir)
+    assert "CreateIndex" in mig_text
+    assert 'columns=("slug","id")' in mig_text.replace(" ", "")
 
     # Ignore timestamp line for snapshot stability
     assert "\n".join(mig_text.split("\n")[1:]) == snapshot

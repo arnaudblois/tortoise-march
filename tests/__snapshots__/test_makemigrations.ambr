@@ -1,4 +1,38 @@
 # serializer version: 1
+# name: test_makemigrations_emits_createindex_for_meta_indexes
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import CreateIndex, CreateModel
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          CreateModel(
+              name="Book",
+              db_table="book",
+              fields=[
+                  (
+                      "id",
+                      "IntField",
+                      {"unique": True, "index": True, "primary_key": True},
+                  ),
+                  ("slug", "CharField", {"max_length": 50}),
+              ],
+          ),
+          CreateIndex(
+              model_name="Book",
+              db_table="book",
+              columns=("slug", "id"),
+              name="book_slug_id_idx",
+          ),
+      ]
+  
+  '''
+# ---
 # name: test_makemigrations_emits_renamefield_for_manual_rename
   '''
   
@@ -158,6 +192,34 @@
               field_name="active",
               field_type="BooleanField",
               options={"default": True},
+          ),
+      ]
+  
+  '''
+# ---
+# name: test_makemigrations_integration.3
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import CreateIndex, RenameModel
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          RenameModel(
+              old_name="Author",
+              new_name="Writer",
+              old_db_table="author",
+              new_db_table="writer",
+          ),
+          CreateIndex(
+              model_name="Writer",
+              db_table="writer",
+              columns=("name",),
+              name="writer_name_idx",
           ),
       ]
   

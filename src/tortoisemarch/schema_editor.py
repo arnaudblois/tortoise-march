@@ -21,6 +21,7 @@ from typing import Any
 from tortoise import BaseDBAsyncClient
 
 from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.operations import default_index_name
 from tortoisemarch.schema_filtering import FK_TYPES, NON_SCHEMA_FIELD_TYPES
 
 PY_CALLABLE_SENTINELS = {"callable", "python_callable", "callable_handled_by_python"}
@@ -155,6 +156,37 @@ class SchemaEditor(ABC):
     def sql_rename_field(self, db_table: str, old_name: str, new_name: str) -> str:
         """Return SQL to rename a column."""
 
+    @abstractmethod
+    def sql_create_index(
+        self,
+        db_table: str,
+        name: str,
+        columns: tuple[str, ...],
+        *,
+        unique: bool = False,
+    ) -> str:
+        """Return SQL to create an index."""
+
+    @abstractmethod
+    def sql_drop_index(self, name: str) -> str:
+        """Return SQL to drop an index by name."""
+
+    @abstractmethod
+    async def create_index(
+        self,
+        conn: BaseDBAsyncClient,
+        db_table: str,
+        name: str,
+        columns: tuple[str, ...],
+        *,
+        unique: bool = False,
+    ) -> None:
+        """Create an index."""
+
+    @abstractmethod
+    async def drop_index(self, conn: BaseDBAsyncClient, name: str) -> None:
+        """Drop an index."""
+
 
 # =============================== POSTGRES ===============================
 
@@ -201,6 +233,32 @@ class PostgresSchemaEditor(SchemaEditor):
             "DO NOTHING": "NO ACTION",
         }
         return aliases.get(up, up)
+
+    @staticmethod
+    def _index_name(db_table: str, colname: str) -> str:
+        """Return a stable index name for a single column."""
+        return default_index_name(db_table, (colname,), unique=False)
+
+    def _render_create_index_sql(
+        self,
+        db_table: str,
+        columns: tuple[str, ...],
+        *,
+        unique: bool = False,
+        name: str | None = None,
+    ) -> str:
+        """Return SQL to create an index."""
+        idx_name = name or default_index_name(db_table, columns, unique=unique)
+        cols_sql = ", ".join(self._q_ident(c) for c in columns)
+        unique_sql = "UNIQUE " if unique else ""
+        return (
+            f"CREATE {unique_sql}INDEX {self._q_ident(idx_name)} "
+            f"ON {self._q_ident(db_table.lower())} ({cols_sql});"
+        )
+
+    def _render_drop_index_sql(self, name: str) -> str:
+        """Return SQL to drop an index by name."""
+        return f"DROP INDEX IF EXISTS {self._q_ident(name)};"
 
     def _column_def(
         self,
@@ -257,6 +315,13 @@ class PostgresSchemaEditor(SchemaEditor):
 
         return " ".join(parts)
 
+    @staticmethod
+    def _should_index(options: dict[str, Any]) -> bool:
+        """Return True if an index should be created for this field."""
+        return bool(options.get("index")) and not any(
+            options.get(flag) for flag in ("unique", "primary_key")
+        )
+
     # ----------------------- rendering (no execute) ---------------------
 
     def sql_create_model(
@@ -267,7 +332,18 @@ class PostgresSchemaEditor(SchemaEditor):
         """Write the SQL to create a model."""
         cols = [self._column_def(name, ftype, opts) for name, ftype, opts in fields]
         col_sql = ", ".join(cols)
-        return f"CREATE TABLE {self._q_ident(db_table.lower())} ({col_sql});"
+        statements = [
+            f"CREATE TABLE {self._q_ident(db_table.lower())} ({col_sql});",
+        ]
+
+        for name, _, opts in fields:
+            if self._should_index(opts):
+                colname = opts.get("db_column") or name
+                statements.append(
+                    self._render_create_index_sql(db_table, (colname,), unique=False),
+                )
+
+        return "\n".join(statements)
 
     def sql_rename_model(self, old_table: str, new_table: str) -> str:
         """Return the SQL to rename a model's backing table."""
@@ -285,10 +361,16 @@ class PostgresSchemaEditor(SchemaEditor):
         options: dict[str, Any],
     ) -> str:
         """Return the SQL to add a column to the table."""
-        return (
+        sql = (
             f"ALTER TABLE {self._q_ident(db_table.lower())} "
             f"ADD COLUMN {self._column_def(field_name, field_type, options)};"
         )
+        if self._should_index(options):
+            colname = options.get("db_column") or field_name
+            sql += (
+                f"\n{self._render_create_index_sql(db_table, (colname,), unique=False)}"
+            )
+        return sql
 
     def sql_remove_field(self, db_table: str, field_name: str) -> str:
         """Write the SQL to remove a field."""
@@ -381,11 +463,29 @@ class PostgresSchemaEditor(SchemaEditor):
                     f"ALTER COLUMN {self._q_ident(field_name)} DROP DEFAULT;",
                 )
 
-                # (Optional) RENAME as a separate statement at the end
-                if new_name and new_name != field_name:
-                    statements.append(
-                        self.sql_rename_field(db_table, field_name, new_name),
-                    )
+        # (Optional) RENAME as a separate statement at the end
+        if new_name and new_name != field_name:
+            statements.append(
+                self.sql_rename_field(db_table, field_name, new_name),
+            )
+
+        # Index creation/drop based on index flag changes
+        old_index = self._should_index(old_options)
+        new_index = self._should_index(new_options)
+        old_colname = old_options.get("db_column") or field_name
+        new_colname = new_options.get("db_column") or new_name or field_name
+
+        if old_index and (not new_index or old_colname != new_colname):
+            statements.append(
+                self._render_drop_index_sql(
+                    default_index_name(db_table, (old_colname,), unique=False),
+                ),
+            )
+
+        if new_index and (not old_index or old_colname != new_colname):
+            statements.append(
+                self._render_create_index_sql(db_table, (new_colname,), unique=False),
+            )
 
         return statements
 
@@ -395,6 +495,26 @@ class PostgresSchemaEditor(SchemaEditor):
             f"ALTER TABLE {self._q_ident(db_table.lower())} "
             f"RENAME COLUMN {self._q_ident(old_name)} TO {self._q_ident(new_name)};"
         )
+
+    def sql_create_index(
+        self,
+        db_table: str,
+        name: str,
+        columns: tuple[str, ...],
+        *,
+        unique: bool = False,
+    ) -> str:
+        """Return SQL to create an index (possibly unique)."""
+        return self._render_create_index_sql(
+            db_table,
+            columns,
+            unique=unique,
+            name=name,
+        )
+
+    def sql_drop_index(self, name: str) -> str:
+        """Return SQL to drop an index by name."""
+        return self._render_drop_index_sql(name)
 
     # -------------------------- execution (async) -----------------------
 
@@ -406,7 +526,9 @@ class PostgresSchemaEditor(SchemaEditor):
     ) -> None:
         """Execute the SQL to create a model."""
         sql = self.sql_create_model(db_table, fields)
-        await self._execute(conn, sql)
+        for stmt in sql.split("\n"):
+            if stmt.strip():
+                await self._execute(conn, stmt)
 
     async def rename_model(self, conn, old_table: str, new_table: str) -> None:
         """Execute the SQL to rename a model."""
@@ -428,7 +550,9 @@ class PostgresSchemaEditor(SchemaEditor):
     ) -> None:
         """Execute the SQL to add a field."""
         sql = self.sql_add_field(db_table, field_name, field_type, options)
-        await self._execute(conn, sql)
+        for stmt in sql.split("\n"):
+            if stmt.strip():
+                await self._execute(conn, stmt)
 
     async def remove_field(
         self,
@@ -468,6 +592,29 @@ class PostgresSchemaEditor(SchemaEditor):
     ) -> None:
         """Execute the SQL to rename a column."""
         sql = self.sql_rename_field(db_table, old_name, new_name)
+        await self._execute(conn, sql)
+
+    async def create_index(
+        self,
+        conn: BaseDBAsyncClient,
+        db_table: str,
+        name: str,
+        columns: tuple[str, ...],
+        *,
+        unique: bool = False,
+    ) -> None:
+        """Execute SQL to create an index."""
+        sql = self.sql_create_index(
+            db_table=db_table,
+            name=name,
+            columns=columns,
+            unique=unique,
+        )
+        await self._execute(conn, sql)
+
+    async def drop_index(self, conn: BaseDBAsyncClient, name: str) -> None:
+        """Execute SQL to drop an index."""
+        sql = self.sql_drop_index(name=name)
         await self._execute(conn, sql)
 
     # ------------------------- type mapping -----------------------------

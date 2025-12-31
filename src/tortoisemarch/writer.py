@@ -15,7 +15,7 @@ import click
 from tortoisemarch.exceptions import InvalidMigrationError
 
 
-def _auto_name(operations: list, number: int) -> str:  # noqa: C901
+def _auto_name(operations: list, number: int) -> str:  # noqa: C901, PLR0912
     """Generate a default name based on the operations, like Django does."""
     if number == 1:
         return "0001_initial.py"
@@ -39,6 +39,11 @@ def _auto_name(operations: list, number: int) -> str:  # noqa: C901
             parts.append(
                 f"rename_{op.old_name.lower()}_to_{op.new_name.lower()}",
             )
+        elif cname == "CreateIndex":
+            cols = "_".join(op.columns) if getattr(op, "columns", None) else "index"
+            parts.append(f"createindex_{op.model_name.lower()}_{cols.lower()}")
+        elif cname == "RemoveIndex":
+            parts.append(f"removeindex_{op.model_name.lower()}")
         elif cname == "RunPython":
             parts.append("runpython")
     if len(operations) > 2:  # noqa: PLR2004

@@ -5,8 +5,10 @@ from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 from tortoisemarch.operations import (
     AddField,
     AlterField,
+    CreateIndex,
     CreateModel,
     RemoveField,
+    RemoveIndex,
     RemoveModel,
     RenameModel,
 )
@@ -17,6 +19,7 @@ def model(
     fields: list[tuple[str, str, dict]],
     *,
     db_table: str | None = None,
+    meta: dict | None = None,
 ) -> ModelState:
     """Construct a ModelState from (name, type, options) tuples."""
     return ModelState(
@@ -30,6 +33,7 @@ def model(
             )
             for fname, ftype, opts in fields
         },
+        meta=meta or {},
     )
 
 
@@ -216,6 +220,42 @@ def test_fk_defaults_normalized_to_avoid_spurious_alter():
     )
     ops = diff_states(old, new)
     assert not any(isinstance(op, AlterField) for op in ops)
+
+
+def test_meta_indexes_emit_create_and_remove_index():
+    """Diffing meta-level indexes should emit CreateIndex/RemoveIndex."""
+    old = project(
+        {
+            "Member": model(
+                "Member",
+                [
+                    ("id", "IntField", {"primary_key": True}),
+                    ("status", "CharField", {}),
+                ],
+                meta={"indexes": [(("status",), False)]},
+            ),
+        },
+    )
+    new = project(
+        {
+            "Member": model(
+                "Member",
+                [
+                    ("id", "IntField", {"primary_key": True}),
+                    ("status", "CharField", {}),
+                    ("role", "CharField", {}),
+                ],
+                meta={"indexes": [(("status", "role"), False)]},
+            ),
+        },
+    )
+
+    ops = diff_states(old, new)
+
+    assert any(isinstance(op, RemoveIndex) for op in ops)
+    creates = [op for op in ops if isinstance(op, CreateIndex)]
+    assert creates
+    assert set(creates[0].columns) == {"status", "role"}
 
 
 def test_detects_model_rename_with_custom_table_name():

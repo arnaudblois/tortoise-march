@@ -25,12 +25,15 @@ from tortoisemarch.model_state import ModelState, ProjectState
 from tortoisemarch.operations import (
     AddField,
     AlterField,
+    CreateIndex,
     CreateModel,
     Operation,
     RemoveField,
+    RemoveIndex,
     RemoveModel,
     RenameField,
     RenameModel,
+    default_index_name,
 )
 from tortoisemarch.schema_filtering import FK_TYPES, is_schema_field_type
 
@@ -152,6 +155,15 @@ def _model_rename_score(old_ms: ModelState, new_ms: ModelState) -> float:
 
     # Cap at 1.0
     return min(score, 1.0)
+
+
+def _model_indexes(ms: ModelState) -> set[tuple[tuple[str, ...], bool]]:
+    """Return a canonical set of (columns, unique) index definitions."""
+    meta = ms.meta or {}
+    indexes = set()
+    for cols, unique in meta.get("indexes", []):
+        indexes.add((tuple(cols), bool(unique)))
+    return indexes
 
 
 def _detect_model_renames(  # noqa: C901
@@ -384,6 +396,42 @@ def _diff_model_fields(
             )
 
 
+def _diff_model_indexes(
+    ops: list[Operation],
+    *,
+    old_model: ModelState,
+    new_model: ModelState,
+) -> None:
+    """Append index operations to transform old_model indexes -> new_model indexes."""
+    old_indexes = _model_indexes(old_model)
+    new_indexes = _model_indexes(new_model)
+
+    removed = old_indexes - new_indexes
+    added = new_indexes - old_indexes
+
+    for cols, unique in sorted(added):
+        ops.append(
+            CreateIndex(
+                model_name=new_model.name,
+                db_table=new_model.db_table,
+                columns=cols,
+                unique=unique,
+            ),
+        )
+
+    for cols, unique in sorted(removed):
+        name = default_index_name(old_model.db_table, cols, unique=unique)
+        ops.append(
+            RemoveIndex(
+                model_name=old_model.name,
+                db_table=old_model.db_table,
+                name=name,
+                columns=cols,
+                unique=unique,
+            ),
+        )
+
+
 # ----------------------------- Diff States ---------------------------------
 
 
@@ -431,9 +479,18 @@ def diff_states(
 
     # ---- Models added (after removing rename-pairs)
     ordered_added_names = _toposort_models_by_fk(added)
-    ops.extend(
-        CreateModel.from_model_state(added[name]) for name in ordered_added_names
-    )
+    for name in ordered_added_names:
+        new_model = added[name]
+        ops.append(CreateModel.from_model_state(new_model))
+        for cols, unique in sorted(_model_indexes(new_model)):
+            ops.append(
+                CreateIndex(
+                    model_name=new_model.name,
+                    db_table=new_model.db_table,
+                    columns=cols,
+                    unique=unique,
+                ),
+            )
 
     # ---- Models changed (same name in both)
     for model_name in sorted(from_models.keys() & to_models.keys()):
@@ -443,6 +500,11 @@ def diff_states(
             new_model=to_models[model_name],
             model_name=model_name,
             rename_map=rename_map.get(model_name),
+        )
+        _diff_model_indexes(
+            ops,
+            old_model=from_models[model_name],
+            new_model=to_models[model_name],
         )
 
     # ---- Renamed models may also have field changes
@@ -458,6 +520,11 @@ def diff_states(
             new_model=new_model,
             model_name=new_name,
             rename_map=confirmed,
+        )
+        _diff_model_indexes(
+            ops,
+            old_model=old_model,
+            new_model=new_model,
         )
 
     return ops

@@ -35,6 +35,13 @@ def _changed_only(old: dict, new: dict) -> tuple[dict[str, Any], dict[str, Any]]
     return old_out, new_out
 
 
+def default_index_name(db_table: str, columns: tuple[str, ...], *, unique: bool) -> str:
+    """Return a stable index name given table/columns/uniqueness."""
+    cols = "_".join(c.lower() for c in columns)
+    suffix = "uniq" if unique else "idx"
+    return f"{db_table.lower()}_{cols}_{suffix}"
+
+
 class Operation(ABC):
     """Base class for all schema migration operations."""
 
@@ -505,6 +512,134 @@ class RenameField(Operation):
             f"db_table={self.db_table!r}, old_name={self.old_name!r}, "
             f"new_name={self.new_name!r})"
         )
+
+
+@dataclass
+class CreateIndex(Operation):
+    """Create an index on one or more columns."""
+
+    model_name: str
+    db_table: str
+    columns: tuple[str, ...]
+    unique: bool = False
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.name is None:
+            self.name = default_index_name(
+                self.db_table,
+                self.columns,
+                unique=self.unique,
+            )
+
+    async def apply(self, conn, schema_editor) -> None:
+        """Create the index."""
+        await schema_editor.create_index(
+            conn,
+            db_table=self.db_table,
+            name=self.name,
+            columns=self.columns,
+            unique=self.unique,
+        )
+
+    async def unapply(self, conn, schema_editor) -> None:
+        """Drop the created index."""
+        await schema_editor.drop_index(conn, name=self.name)
+
+    async def to_sql(self, conn, schema_editor) -> list[str]:
+        """Return SQL to create the index."""
+        _ = conn
+        return [
+            schema_editor.sql_create_index(
+                db_table=self.db_table,
+                name=self.name,
+                columns=self.columns,
+                unique=self.unique,
+            ),
+        ]
+
+    def mutate_state(self, state: ProjectState) -> None:
+        """Track index metadata in the in-memory state."""
+        model = state.model_states[self.model_name]
+        meta = model.meta or {}
+        indexes = list(meta.get("indexes", []))
+        key = (tuple(self.columns), self.unique)
+        if key not in indexes:
+            indexes.append(key)
+        meta["indexes"] = indexes
+        model.meta = meta
+
+    def to_code(self) -> str:
+        """Return Python code to recreate this operation."""
+        args = (
+            f"model_name={self.model_name!r}, "
+            f"db_table={self.db_table!r}, "
+            f"columns={tuple(self.columns)!r}"
+        )
+        if self.unique:
+            args += ", unique=True"
+        if self.name:
+            args += f", name={self.name!r}"
+        return f"CreateIndex({args})"
+
+
+@dataclass
+class RemoveIndex(Operation):
+    """Drop an index created on a model."""
+
+    model_name: str
+    db_table: str
+    name: str
+    columns: tuple[str, ...] | None = None
+    unique: bool = False
+
+    async def apply(self, conn, schema_editor) -> None:
+        """Drop the index."""
+        await schema_editor.drop_index(conn, name=self.name)
+
+    async def unapply(self, conn, schema_editor) -> None:
+        """Recreate the index."""
+        if self.columns is None:
+            msg = "Cannot recreate index without columns."
+            raise RuntimeError(msg)
+        await schema_editor.create_index(
+            conn,
+            db_table=self.db_table,
+            name=self.name,
+            columns=self.columns,
+            unique=self.unique,
+        )
+
+    async def to_sql(self, conn, schema_editor) -> list[str]:
+        """Return SQL to drop the index."""
+        _ = conn
+        return [schema_editor.sql_drop_index(name=self.name)]
+
+    def mutate_state(self, state: ProjectState) -> None:
+        """Remove index metadata from the in-memory state."""
+        model = state.model_states[self.model_name]
+        meta = model.meta or {}
+        target_cols = tuple(self.columns or ())
+        indexes = [
+            ix
+            for ix in meta.get("indexes", [])
+            if not (tuple(ix[0]) == target_cols and bool(ix[1]) == self.unique)
+        ]
+        meta["indexes"] = indexes
+        model.meta = meta
+
+    def to_code(self) -> str:
+        """Return Python code to recreate this operation."""
+        args = (
+            f"model_name={self.model_name!r}, "
+            f"db_table={self.db_table!r}, "
+            f"name={self.name!r}"
+        )
+        if self.columns:
+            args += f", columns={tuple(self.columns)!r}"
+        if self.unique:
+            args += ", unique=True"
+        return f"RemoveIndex({args})"
 
 
 @dataclass

@@ -261,7 +261,7 @@ def extract_field_state(name: str, field: Any) -> FieldState:
     return FieldState(name=name, field_type=field_type, **opts)
 
 
-def extract_model_state(model_cls: type[Model]) -> ModelState:
+def extract_model_state(model_cls: type[Model]) -> ModelState:  # noqa: C901
     """Convert a Tortoise model class into a ModelState.
 
     Preserves field order as defined by Tortoise (fields_map is ordered).
@@ -308,10 +308,25 @@ def extract_model_state(model_cls: type[Model]) -> ModelState:
 
         field_states[fname.lower()] = extract_field_state(fname, field)
 
+    # Meta-level indexes and unique_together
+    meta_indexes = []
+    raw_indexes = getattr(meta, "indexes", None) or ()
+    for idx in raw_indexes:
+        cols = tuple(str(c).lower() for c in idx)
+        if cols:
+            meta_indexes.append((cols, False))
+
+    raw_unique = getattr(meta, "unique_together", None) or ()
+    for uq in raw_unique:
+        cols = tuple(str(c).lower() for c in uq)
+        if cols:
+            meta_indexes.append((cols, True))
+
     return ModelState(
         name=model_cls.__name__,
         db_table=getattr(meta, "db_table", model_cls.__name__.lower()),
         field_states=field_states,
+        meta={"indexes": meta_indexes} if meta_indexes else {},
     )
 
 

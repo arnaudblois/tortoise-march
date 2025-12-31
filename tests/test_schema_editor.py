@@ -198,3 +198,56 @@ def test_schema_editor_refuses_unknown_field_types():
     ed = PostgresSchemaEditor()
     with pytest.raises(InvalidMigrationError):
         ed.sql_for_field("TotallyUnknownFieldType", {})
+
+
+def test_sql_create_model_emits_indexes():
+    """CreateModel SQL should include indexes for indexed fields."""
+    ed = PostgresSchemaEditor()
+    sql = ed.sql_create_model(
+        "book",
+        [
+            ("id", "IntField", {"primary_key": True}),
+            ("title", "CharField", {"max_length": 200, "index": True}),
+            ("slug", "CharField", {"max_length": 100, "unique": True}),
+        ],
+    )
+
+    assert 'CREATE INDEX "book_title_idx"' in sql
+    # unique constraint should not emit a separate index
+    assert "slug_idx" not in sql
+
+
+def test_sql_add_field_with_index_appends_create_index():
+    """AddField SQL should append CREATE INDEX when index=True."""
+    ed = PostgresSchemaEditor()
+
+    sql = ed.sql_add_field(
+        db_table="author",
+        field_name="email",
+        field_type="CharField",
+        options={"max_length": 255, "index": True},
+    )
+
+    assert "ADD COLUMN" in sql
+    assert 'CREATE INDEX "author_email_idx"' in sql
+
+
+def test_sql_alter_field_handles_index_changes():
+    """AlterField SQL should drop/create indexes when index flag changes."""
+    ed = PostgresSchemaEditor()
+
+    stmts = ed.sql_alter_field(
+        db_table="invitation",
+        field_name="membership",
+        old_options={"type": "IntField", "index": False},
+        new_options={"type": "IntField", "index": True},
+    )
+    assert any("CREATE INDEX" in s for s in stmts)
+
+    stmts = ed.sql_alter_field(
+        db_table="invitation",
+        field_name="membership",
+        old_options={"type": "IntField", "index": True},
+        new_options={"type": "IntField", "index": False},
+    )
+    assert any("DROP INDEX" in s for s in stmts)
