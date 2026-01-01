@@ -4,8 +4,10 @@ from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 from tortoisemarch.operations import (
     AddField,
     AlterField,
+    CreateIndex,
     CreateModel,
     RemoveField,
+    RemoveIndex,
     RemoveModel,
     RenameField,
     RenameModel,
@@ -257,6 +259,40 @@ def test_to_code_is_stringy():
         s = op.to_code()
         assert isinstance(s, str)
         assert s.strip()  # non-empty
+
+
+async def test_createindex_and_removeindex_to_code_and_mutation():
+    """CreateIndex/RemoveIndex should render code and update meta indexes."""
+    state = ProjectState(
+        model_states={
+            "Item": ModelState(name="Item", db_table="item", field_states={}),
+        },
+    )
+
+    ci = CreateIndex(
+        model_name="Item",
+        db_table="item",
+        columns=("a", "b"),
+        unique=False,
+        name="item_a_b_idx",
+    )
+    sql = await ci.to_sql(conn=None, schema_editor=PostgresSchemaEditor())
+    assert "CREATE INDEX" in sql[0]
+    assert "item_a_b_idx" in sql[0]
+    ci.mutate_state(state)
+    assert (("a", "b"), False) in state.model_states["Item"].meta.get("indexes", [])
+
+    ri = RemoveIndex(
+        model_name="Item",
+        db_table="item",
+        name="item_a_b_idx",
+        columns=("a", "b"),
+        unique=False,
+    )
+    sql_drop = await ri.to_sql(conn=None, schema_editor=PostgresSchemaEditor())
+    assert "DROP INDEX" in sql_drop[0]
+    ri.mutate_state(state)
+    assert not state.model_states["Item"].meta.get("indexes")
 
 
 def test_alter_field_to_code_orders_changed_opts():

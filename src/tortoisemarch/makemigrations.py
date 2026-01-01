@@ -21,12 +21,14 @@ from typing import Any
 
 import click
 from tortoise import Tortoise
+from tortoise.exceptions import ConfigurationError
 
 from tortoisemarch.conf import load_config
 from tortoisemarch.differ import diff_states, score_candidate
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.extractor import extract_project_state
 from tortoisemarch.loader import load_migration_state
+from tortoisemarch.model_state import ProjectState
 from tortoisemarch.operations import AddField, AlterField, CreateModel
 from tortoisemarch.writer import write_migration
 
@@ -38,14 +40,14 @@ def _has_db_initialisable_default(opts: dict[str, Any]) -> bool:
     """Return True if the field has a default that the database can apply directly.
 
     `db_default` is always accepted. Literal `default` values are accepted.
-    `None` and callable defaults (sentinel `"callable"`) are rejected.
+    `None` and callable defaults (sentinel `"python_callable"`) are rejected.
     """
     if "db_default" in opts and opts["db_default"] is not None:
         return True
     if "default" not in opts:
         return False
     default = opts["default"]
-    return default not in (None, "callable")
+    return default not in (None, "python_callable")
 
 
 def _validate_non_nullable_adds_and_warn_alters(  # noqa: C901, PLR0912
@@ -307,6 +309,32 @@ def _tortoise_conf_for_introspection(conf: dict[str, Any]) -> dict[str, Any]:
     return conf_copy
 
 
+def _validate_related_models(
+    state: ProjectState,
+    *,
+    app_labels: set[str],
+    module_prefixes: set[str],
+) -> None:
+    """Ensure related_model strings reference known app labels when dotted."""
+    allowed_prefixes = app_labels | module_prefixes
+    for ms in state.model_states.values():
+        for fs in ms.field_states.values():
+            rm = getattr(fs, "related_model", None)
+            if not rm or not isinstance(rm, str):
+                continue
+                if "." not in rm:
+                    continue
+                prefix = rm.split(".", 1)[0]
+                if prefix not in allowed_prefixes:
+                    msg = (
+                        f"Foreign key {ms.name}.{fs.name} refers to '{rm}', "
+                        f"but no app named '{prefix}' is registered. "
+                        f"Registered apps: {sorted(app_labels)}. "
+                        "Update the FK string to use a valid app label."
+                    )
+                raise InvalidMigrationError(msg)
+
+
 async def makemigrations(
     tortoise_conf: dict | None = None,
     location: Path | None = None,
@@ -347,7 +375,12 @@ async def makemigrations(
     tortoise_conf = _tortoise_conf_for_introspection(conf=tortoise_conf)
 
     # Init the Tortoise apps so extractor can see the models
-    await Tortoise.init(config=tortoise_conf)
+    try:
+        await Tortoise.init(config=tortoise_conf)
+    except ConfigurationError as exc:
+        await Tortoise._reset_apps()  # noqa: SLF001
+        msg = f"Tortoise could not initialise apps due to configuration errors. {exc}"
+        raise InvalidMigrationError(msg) from exc
 
     # 2) Pre-check for conflicts
     pre_conflicts = _detect_conflicts(migrations_dir=location)
@@ -367,6 +400,18 @@ async def makemigrations(
     # 4) Compute operations by diffing old vs new state
     old_state = load_migration_state(migration_dir=location)
     new_state = extract_project_state(apps=Tortoise.apps)
+    module_prefixes: set[str] = set()
+    for models in Tortoise.apps.values():
+        for cls in models.values():
+            mod = getattr(cls, "__module__", "")
+            if mod:
+                module_prefixes.add(mod.split(".", 1)[0])
+
+    _validate_related_models(
+        new_state,
+        app_labels=set(Tortoise.apps.keys()),
+        module_prefixes=module_prefixes,
+    )
     rename_map = _choose_renames_interactive(old_state, new_state)
     operations = diff_states(old_state, new_state, rename_map=rename_map or {})
     _validate_non_nullable_adds_and_warn_alters(operations)

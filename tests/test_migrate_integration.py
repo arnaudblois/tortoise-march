@@ -5,7 +5,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
 from tortoise import Tortoise
 
 from tortoisemarch.makemigrations import makemigrations
@@ -25,7 +24,6 @@ def _tortoise_conf(models_module: str = "models") -> dict:
     }
 
 
-@pytest.mark.asyncio
 async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR0915
     """Evolve schema step-by-step and assert exact SQL.
 
@@ -316,7 +314,6 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
     await Tortoise.close_connections()
 
 
-@pytest.mark.asyncio
 async def test_runpython_data_migration_uses_orm(tmp_path: Path):
     """RunPython migrations should be able to use the Tortoise ORM."""
     # Setup: migrations + models packages

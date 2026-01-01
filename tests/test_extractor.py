@@ -1,6 +1,8 @@
 """Test suite for the state extraction from the model code."""
 
-import pytest
+import sys
+import textwrap
+
 from tortoise import Tortoise, fields
 from tortoise.models import Model
 
@@ -42,7 +44,6 @@ class Book(Model):
         table = "book"
 
 
-@pytest.mark.asyncio
 async def test_extract_project_state_with_fk():
     """Test the extraction of the code into a ProjectState."""
     await Tortoise.init(
@@ -86,3 +87,88 @@ async def test_extract_project_state_with_fk():
     # Sanity: relation metadata
     assert fk.related_table == "author"
     assert fk.to_field == "id"
+
+
+async def test_extract_project_state_multiple_apps(tmp_path):
+    """Ensure models registered under different app labels are extracted."""
+    mod_catalog = tmp_path / "catalog_models.py"
+    mod_catalog.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class CatalogEntry(models.Model):
+                id = fields.IntField(primary_key=True)
+                name = fields.CharField(max_length=50)
+
+                class Meta:
+                    table = "catalog_entry"
+            """,
+        ),
+    )
+
+    mod_accounts = tmp_path / "accounts_models.py"
+    mod_accounts.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class AccountUser(models.Model):
+                id = fields.IntField(primary_key=True)
+                email = fields.CharField(max_length=100)
+
+                class Meta:
+                    table = "account_user"
+            """,
+        ),
+    )
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        await Tortoise.init(
+            db_url="sqlite://:memory:",
+            modules={
+                "catalog": ["catalog_models"],
+                "accounts": ["accounts_models"],
+            },
+        )
+        state = extract_project_state(apps=Tortoise.apps)
+        assert set(state.model_states.keys()) == {"CatalogEntry", "AccountUser"}
+        assert state.get_model("CatalogEntry").db_table == "catalog_entry"
+        assert state.get_model("AccountUser").db_table == "account_user"
+    finally:
+        await Tortoise._reset_apps()  # noqa: SLF001
+        sys.path.remove(str(tmp_path))
+
+
+def test_extract_model_state_respects_index_together(tmp_path):
+    """index_together and unique_together should be captured as meta indexes."""
+    mod = tmp_path / "indexed_models.py"
+    mod.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Indexed(models.Model):
+                a = fields.IntField()
+                b = fields.IntField()
+                c = fields.IntField()
+
+                class Meta:
+                    index_together = (("a", "b"),)
+                    unique_together = (("b", "c"),)
+            """,
+        ),
+    )
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        from indexed_models import Indexed  # noqa: PLC0415
+
+        state = extract_project_state(apps={"default": {"Indexed": Indexed}})
+        ms = state.get_model("Indexed")
+        indexes = set(ms.meta.get("indexes", []))
+        assert (("a", "b"), False) in indexes
+        assert (("b", "c"), True) in indexes
+    finally:
+        sys.path.remove(str(tmp_path))

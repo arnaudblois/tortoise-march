@@ -59,11 +59,11 @@ def _safe_default(value: Any) -> Any:
     """Normalize field defaults for migration state.
 
     Callable defaults (e.g. `uuid.uuid4`, `list`, `datetime.now`)
-    are replaced with the string 'callable' because function objects
+    are replaced with the string 'python_callable' because function objects
     are not stable across runs and cannot be meaningfully serialized.
     This avoids unreadable migration files and broken diffs.
     """
-    return "callable" if callable(value) else value
+    return "python_callable" if callable(value) else value
 
 
 def _field_type_name(field: Any) -> str:
@@ -309,14 +309,45 @@ def extract_model_state(model_cls: type[Model]) -> ModelState:  # noqa: C901
         field_states[fname.lower()] = extract_field_state(fname, field)
 
     # Meta-level indexes and unique_together
+    meta_config = getattr(model_cls, "Meta", None)
     meta_indexes = []
-    raw_indexes = getattr(meta, "indexes", None) or ()
+    raw_indexes = (
+        getattr(meta, "indexes", None)
+        or getattr(
+            meta_config,
+            "indexes",
+            None,
+        )
+        or ()
+    )
     for idx in raw_indexes:
         cols = tuple(str(c).lower() for c in idx)
         if cols:
             meta_indexes.append((cols, False))
 
-    raw_unique = getattr(meta, "unique_together", None) or ()
+    raw_index_together = (
+        getattr(meta, "index_together", None)
+        or getattr(
+            meta_config,
+            "index_together",
+            None,
+        )
+        or ()
+    )
+    for idx in raw_index_together:
+        cols = tuple(str(c).lower() for c in idx)
+        if cols:
+            meta_indexes.append((cols, False))
+
+    raw_unique = (
+        getattr(meta, "unique_together", None)
+        or getattr(
+            meta_config,
+            "unique_together",
+            None,
+        )
+        or ()
+    )
     for uq in raw_unique:
         cols = tuple(str(c).lower() for c in uq)
         if cols:
@@ -335,9 +366,10 @@ def extract_project_state(
     apps: dict[str, dict[str, type[Model]]] | None = None,
 ) -> ProjectState:
     """Extract models from Tortoise into a ProjectState."""
-    apps = apps or Tortoise.apps
+    apps = apps or Tortoise.apps or {}
     model_states: dict[str, ModelState] = {}
-    for model_cls in apps.get("models", {}).values():
-        ms = extract_model_state(model_cls)
-        model_states[ms.name] = ms
+    for models in apps.values():
+        for model_cls in models.values():
+            ms = extract_model_state(model_cls)
+            model_states[ms.name] = ms
     return ProjectState(model_states=model_states)

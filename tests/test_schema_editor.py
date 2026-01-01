@@ -22,7 +22,6 @@ def schema_editor():
     return PostgresSchemaEditor()
 
 
-@pytest.mark.asyncio
 async def test_create_and_remove_model(schema_editor):
     """Test CreateModel and RemoveModel ops work correctly."""
     conn = await asyncpg.connect(DATABASE_URL)
@@ -62,7 +61,6 @@ async def test_create_and_remove_model(schema_editor):
         await conn.close()
 
 
-@pytest.mark.asyncio
 async def test_add_and_remove_field(schema_editor):
     """Test that AddField and RemoveField ops are executed correctly."""
     conn = await asyncpg.connect(DATABASE_URL)
@@ -101,7 +99,6 @@ async def test_add_and_remove_field(schema_editor):
         await conn.close()
 
 
-@pytest.mark.asyncio
 async def test_alter_field_nullability_and_default(schema_editor):
     """Test that AlterField's null and default are honoured."""
     conn = await asyncpg.connect(DATABASE_URL)
@@ -198,6 +195,28 @@ def test_schema_editor_refuses_unknown_field_types():
     ed = PostgresSchemaEditor()
     with pytest.raises(InvalidMigrationError):
         ed.sql_for_field("TotallyUnknownFieldType", {})
+
+
+def test_sql_create_index_multi_column_and_unique():
+    """sql_create_index should handle multi-column and unique flags."""
+    ed = PostgresSchemaEditor()
+
+    sql = ed.sql_create_index(
+        db_table="thing",
+        name="thing_multi_idx",
+        columns=("a", "b"),
+        unique=False,
+    )
+    assert 'CREATE INDEX "thing_multi_idx"' in sql
+    assert '"a", "b"' in sql
+
+    sql_unique = ed.sql_create_index(
+        db_table="thing",
+        name="thing_ab_uniq",
+        columns=("a", "b"),
+        unique=True,
+    )
+    assert "UNIQUE INDEX" in sql_unique
 
 
 def test_sql_create_model_emits_indexes():

@@ -42,8 +42,8 @@ def _value_for_migration_code(v: Any) -> Any:
     if isinstance(v, dict):
         return {k: _value_for_migration_code(val) for k, val in v.items()}
 
-    # "callable" sentinel is preserved and handled by the schema editor
-    if v == "callable":
+    # "python_callable" sentinel is preserved and handled by the schema editor
+    if v == "python_callable":
         return v
 
     msg = (

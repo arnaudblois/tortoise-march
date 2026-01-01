@@ -133,7 +133,7 @@
                       "id",
                       "UUIDField",
                       {
-                          "default": "callable",
+                          "default": "python_callable",
                           "unique": True,
                           "index": True,
                           "primary_key": True,
@@ -220,6 +220,58 @@
               db_table="writer",
               columns=("name",),
               name="writer_name_idx",
+          ),
+      ]
+  
+  '''
+# ---
+# name: test_makemigrations_multi_app_with_cross_fk
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import CreateModel
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          CreateModel(
+              name="Team",
+              db_table="team",
+              fields=[
+                  (
+                      "id",
+                      "IntField",
+                      {"unique": True, "index": True, "primary_key": True},
+                  ),
+                  ("name", "CharField", {"max_length": 100}),
+              ],
+          ),
+          CreateModel(
+              name="Member",
+              db_table="member",
+              fields=[
+                  (
+                      "id",
+                      "IntField",
+                      {"unique": True, "index": True, "primary_key": True},
+                  ),
+                  ("user_id", "IntField", {}),
+                  (
+                      "team",
+                      "ForeignKeyFieldInstance",
+                      {
+                          "db_column": "team_id",
+                          "related_table": "team",
+                          "related_model": "catalog_models.Team",
+                          "to_field": "id",
+                          "on_delete": "CASCADE",
+                          "referenced_type": "IntField",
+                      },
+                  ),
+              ],
           ),
       ]
   

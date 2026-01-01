@@ -1,6 +1,5 @@
 """Test that Models are created correctly."""
 
-import pytest
 from tortoise import Tortoise
 
 from tortoisemarch.operations import CreateModel
@@ -9,7 +8,6 @@ from tortoisemarch.schema_editor import PostgresSchemaEditor
 DATABASE_URL = "postgres://postgres:test@localhost:5445/testdb"
 
 
-@pytest.mark.asyncio
 async def test_create_model_table_exists():
     """Ensure that CreateModel creates the users table in Postgres."""
     await Tortoise.init(

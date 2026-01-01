@@ -1,6 +1,5 @@
 """Test the `makemigrations` command."""
 
-import asyncio
 import importlib
 import sys
 import textwrap
@@ -10,6 +9,7 @@ import pytest
 from tortoise import Tortoise
 
 from tortoisemarch import makemigrations as mm
+from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.makemigrations import makemigrations
 
 
@@ -37,8 +37,30 @@ async def run_makemigrations(migrations_dir) -> None:
     await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
 
 
-@pytest.mark.asyncio
-async def test_makemigrations_integration(tmp_path: Path, snapshot):  # noqa: PLR0915
+async def run_makemigrations_with_modules(
+    migrations_dir,
+    modules: dict[str, list[str]],
+):
+    """Run makemigrations with a custom app/module mapping."""
+    # Clear any previously imported modules to avoid stale state
+    for mod in {mod for mods in modules.values() for mod in mods}:
+        if mod in sys.modules:
+            del sys.modules[mod]
+        importlib.import_module(mod)
+    await Tortoise._reset_apps()  # noqa: SLF001
+    tortoise_orm = {
+        "connections": {
+            "default": "postgres://postgres:test@localhost:5445/testdb",
+        },
+        "apps": {
+            label: {"models": mods, "default_connection": "default"}
+            for label, mods in modules.items()
+        },
+    }
+    await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+
+async def test_makemigrations_integration(tmp_path: Path, snapshot):
     """Integration test simulating a sequence of model evolutions.
 
     1) Create Book model.
@@ -110,7 +132,6 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):  # noqa: PL
         """,
     )
     write_models(model_code_2)
-    await asyncio.sleep(0)  # yield once; not strictly necessary but harmless
     await run_makemigrations(migrations_dir)
 
     all_py_names = {str(x).split("/")[-1] for x in migrations_dir.glob("*.py")}
@@ -145,7 +166,6 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):  # noqa: PL
         """,
     )
     write_models(model_code_3)
-    await asyncio.sleep(0)
     await run_makemigrations(migrations_dir)
 
     all_py_names = {str(x).split("/")[-1] for x in migrations_dir.glob("*.py")}
@@ -189,7 +209,6 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):  # noqa: PL
     """,
     )
     write_models(model_code_4)
-    await asyncio.sleep(0)
     await run_makemigrations(migrations_dir)
 
     all_py_names = {str(x).split("/")[-1] for x in migrations_dir.glob("*.py")}
@@ -203,7 +222,114 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):  # noqa: PL
     assert "\n".join(mig_text.split("\n")[1:]) == snapshot
 
 
+async def test_makemigrations_multi_app_with_cross_fk(tmp_path: Path, snapshot):
+    """Integration check: models across app labels with cross-app FK."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").touch()
+
+    apps_dir = tmp_path / "apps"
+    apps_dir.mkdir()
+    sys.path.insert(0, str(apps_dir))
+
+    catalog_mod = apps_dir / "catalog_models.py"
+    catalog_mod.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Team(models.Model):
+                id = fields.IntField(primary_key=True)
+                name = fields.CharField(max_length=100)
+
+                class Meta:
+                    table = "team"
+            """,
+        ),
+    )
+
+    accounts_mod = apps_dir / "accounts_models.py"
+    accounts_mod.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Member(models.Model):
+                id = fields.IntField(primary_key=True)
+                user_id = fields.IntField()
+                team = fields.ForeignKeyField("catalog.Team", related_name="members")
+
+                class Meta:
+                    table = "member"
+            """,
+        ),
+    )
+
+    modules = {
+        "catalog": ["catalog_models"],
+        "accounts": ["accounts_models"],
+    }
+
+    await run_makemigrations_with_modules(migrations_dir, modules)
+
+    mig_text = newest_migration_text(migrations_dir)
+    flat = mig_text.replace(" ", "").replace("\n", "")
+    assert 'CreateModel(name="Team"' in flat
+    assert 'CreateModel(name="Member"' in flat
+    # Cross-app FK should target team table
+    assert '"related_table": "team"' in mig_text
+    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    sys.path.remove(str(apps_dir))
+
+
 @pytest.mark.asyncio
+async def test_makemigrations_raises_on_invalid_app_label_in_fk(tmp_path: Path):
+    """Ensure we fail fast when FK strings use unknown app labels."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").touch()
+
+    apps_dir = tmp_path / "apps"
+    apps_dir.mkdir()
+    sys.path.insert(0, str(apps_dir))
+
+    apps_dir.joinpath("team_models.py").write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Team(models.Model):
+                id = fields.IntField(primary_key=True)
+                name = fields.CharField(max_length=100)
+            """,
+        ),
+    )
+
+    apps_dir.joinpath("member_models.py").write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Member(models.Model):
+                id = fields.IntField(primary_key=True)
+                # Wrong app label in related_model
+                team = fields.ForeignKeyField("models.Team", related_name="members")
+            """,
+        ),
+    )
+
+    modules = {
+        "catalog": ["team_models"],
+        "accounts": ["member_models"],
+    }
+
+    with pytest.raises(InvalidMigrationError) as excinfo:
+        await run_makemigrations_with_modules(migrations_dir, modules)
+
+    assert "No app with name" in str(excinfo.value)
+    sys.path.remove(str(apps_dir))
+
+
 async def test_makemigrations_emits_renamefield_for_manual_rename(
     tmp_path,
     monkeypatch,
@@ -361,7 +487,6 @@ async def test_makemigrations_emits_renamemodel_for_model_rename(
     assert "\n".join(mig_text.split("\n")[1:]) == snapshot
 
 
-@pytest.mark.asyncio
 async def test_makemigrations_emits_createindex_for_meta_indexes(
     tmp_path: Path,
     snapshot,

@@ -21,7 +21,11 @@ def test_write_migration_serializes_enum_default_to_literal(tmp_path):
             name="User",
             db_table="user",
             fields=[
-                ("id", "UUIDField", {"primary_key": True, "default": "callable"}),
+                (
+                    "id",
+                    "UUIDField",
+                    {"primary_key": True, "default": "python_callable"},
+                ),
                 ("status", "CharField", {"default": Status.ACTIVE, "max_length": 16}),
             ],
         ),

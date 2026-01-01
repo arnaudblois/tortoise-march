@@ -20,7 +20,7 @@ def test_createmodel_codegen_is_compact():
             "published_at": FieldState(
                 name="published_at",
                 field_type="DatetimeField",
-                default="callable",
+                default="python_callable",
             ),
         },
     )

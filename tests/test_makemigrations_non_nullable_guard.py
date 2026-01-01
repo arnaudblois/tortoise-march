@@ -139,7 +139,7 @@ def test_default_callable_is_not_accepted_and_should_raise():
         model_name="User",
         field_name="token",
         field_type="CharField",
-        options={"null": False, "default": "callable"},
+        options={"null": False, "default": "python_callable"},
     )
     with pytest.raises(InvalidMigrationError):
         _validate_non_nullable_adds_and_warn_alters([op])
