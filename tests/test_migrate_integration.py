@@ -5,10 +5,12 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
 from tortoise import Tortoise
 
 from tortoisemarch.makemigrations import makemigrations
-from tortoisemarch.migrate import migrate
+from tortoisemarch.migrate import migrate, tortoise_context
+from tortoisemarch.recorder import MigrationRecorder
 
 
 def _tortoise_conf(models_module: str = "models") -> dict:
@@ -312,6 +314,55 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
     titles = {b.title for b in await Book.all()}
     assert titles == {"The Hobbit", "Small Gods"}
     await Tortoise.close_connections()
+
+
+async def test_migrate_rolls_back_and_not_recorded_on_failure(tmp_path: Path):
+    """Migration failure should roll back DDL and not mark as applied."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+
+    # Write a migration that creates a table then raises
+    boom = migrations_dir / "0001_boom.py"
+    boom.write_text(
+        textwrap.dedent(
+            """
+            class Migration:
+                @staticmethod
+                async def apply(conn, schema_editor):
+                    await conn.execute_script('CREATE TABLE "boom" (id INT);')
+                    raise RuntimeError("boom")
+
+                @staticmethod
+                async def unapply(conn, schema_editor):
+                    await conn.execute_script('DROP TABLE IF EXISTS "boom";')
+
+                @staticmethod
+                async def to_sql(conn, schema_editor):
+                    return ['CREATE TABLE "boom" (id INT);']
+            """,
+        ),
+    )
+
+    tortoise_orm = _tortoise_conf("models")
+
+    with pytest.raises(RuntimeError):
+        await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+    # Ensure migration not recorded
+    await Tortoise._reset_apps()  # noqa: SLF001
+    async with tortoise_context(tortoise_orm):
+        applied = await MigrationRecorder.list_applied()
+        assert "0001_boom" not in applied
+        # Table should not exist
+        conn = Tortoise.get_connection("default")
+        _, rows = await conn.execute_query(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_name='boom');",
+            [],
+        )
+        assert rows
+        assert rows[0].get("exists") is False
 
 
 async def test_runpython_data_migration_uses_orm(tmp_path: Path):

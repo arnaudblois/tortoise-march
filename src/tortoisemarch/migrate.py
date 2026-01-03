@@ -120,8 +120,10 @@ async def migrate(
                     click.echo(f"💡 Migration {name} SQL displayed (not executed)")
                     continue
 
-                await Migration.apply(conn, schema_editor)
-                await MigrationRecorder.record_applied(name)
+                async with conn._in_transaction():  # noqa: SLF001
+                    tx = Tortoise.get_connection("default")
+                    await Migration.apply(tx, schema_editor)
+                    await MigrationRecorder.record_applied(name)
                 click.echo(f"✅ Migration {name} applied")
 
     except (OSError, asyncpg.PostgresError) as exc:
