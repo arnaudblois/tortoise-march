@@ -197,6 +197,32 @@ def test_schema_editor_refuses_unknown_field_types():
         ed.sql_for_field("TotallyUnknownFieldType", {})
 
 
+def test_primary_key_column_omits_redundant_constraints():
+    """PRIMARY KEY should not emit extra NOT NULL/UNIQUE."""
+    ed = PostgresSchemaEditor()
+    sql = ed.sql_create_model(
+        "thing",
+        [("id", "UUIDField", {"primary_key": True})],
+    )
+    assert "PRIMARY KEY" in sql
+    assert "NOT NULL" not in sql
+    assert "UNIQUE" not in sql
+
+
+def test_unique_non_pk_still_emits_unique():
+    """Non-PK unique columns should still render UNIQUE."""
+    ed = PostgresSchemaEditor()
+    sql = ed.sql_create_model(
+        "thing",
+        [
+            ("id", "IntField", {"primary_key": True}),
+            ("slug", "CharField", {"max_length": 20, "unique": True}),
+        ],
+    )
+    assert "slug" in sql
+    assert "UNIQUE" in sql
+
+
 def test_sql_create_index_multi_column_and_unique():
     """sql_create_index should handle multi-column and unique flags."""
     ed = PostgresSchemaEditor()

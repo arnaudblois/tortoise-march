@@ -15,11 +15,7 @@
               name="Book",
               db_table="book",
               fields=[
-                  (
-                      "id",
-                      "IntField",
-                      {"unique": True, "index": True, "primary_key": True},
-                  ),
+                  ("id", "IntField", {"primary_key": True}),
                   ("slug", "CharField", {"max_length": 50}),
               ],
           ),
@@ -132,12 +128,7 @@
                   (
                       "id",
                       "UUIDField",
-                      {
-                          "default": "python_callable",
-                          "unique": True,
-                          "index": True,
-                          "primary_key": True,
-                      },
+                      {"default": "python_callable", "primary_key": True},
                   ),
                   ("title", "CharField", {"max_length": 100}),
               ],
@@ -162,11 +153,7 @@
               name="Author",
               db_table="author",
               fields=[
-                  (
-                      "id",
-                      "IntField",
-                      {"unique": True, "index": True, "primary_key": True},
-                  ),
+                  ("id", "IntField", {"primary_key": True}),
                   ("name", "CharField", {"max_length": 100}),
               ],
           ),
@@ -241,11 +228,7 @@
               name="Team",
               db_table="team",
               fields=[
-                  (
-                      "id",
-                      "IntField",
-                      {"unique": True, "index": True, "primary_key": True},
-                  ),
+                  ("id", "IntField", {"primary_key": True}),
                   ("name", "CharField", {"max_length": 100}),
               ],
           ),
@@ -253,11 +236,7 @@
               name="Member",
               db_table="member",
               fields=[
-                  (
-                      "id",
-                      "IntField",
-                      {"unique": True, "index": True, "primary_key": True},
-                  ),
+                  ("id", "IntField", {"primary_key": True}),
                   ("user_id", "IntField", {}),
                   (
                       "team",

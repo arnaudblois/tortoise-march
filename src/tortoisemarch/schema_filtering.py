@@ -58,6 +58,9 @@ def _value_for_migration_code(v: Any) -> Any:
 def compact_opts_for_code(opts: dict[str, Any]) -> dict[str, Any]:
     """Remove non-meaningful options to keep migrations readable."""
     out: dict[str, Any] = {}
+    # Drop redundant unique/index when primary key is set.
+    if opts.get("primary_key"):
+        opts = {k: v for k, v in opts.items() if k not in {"unique", "index"}}
     for k, v in opts.items():
         if v is None:
             continue

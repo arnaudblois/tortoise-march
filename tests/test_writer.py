@@ -3,6 +3,7 @@
 from enum import StrEnum
 from pathlib import Path
 
+from tortoisemarch.model_state import FieldState, ModelState
 from tortoisemarch.operations import CreateModel, RenameModel
 from tortoisemarch.writer import write_migration
 
@@ -78,3 +79,25 @@ def test_auto_name_includes_rename_model(tmp_path: Path):
     fname = Path(out_path).name
 
     assert fname.startswith("0002_rename_companyuser_to_companymember")
+
+
+def test_compaction_removes_redundant_pk_flags(tmp_path: Path):
+    """Primary keys should not serialize redundant unique/index/null flags."""
+    ms = ModelState(
+        name="Item",
+        db_table="item",
+        field_states={
+            "id": FieldState(
+                name="id",
+                field_type="UUIDField",
+                primary_key=True,
+                unique=True,
+                index=True,
+                null=False,
+            ),
+        },
+    )
+
+    op = CreateModel.from_model_state(ms)
+    _, _, opts = op.fields[0]
+    assert opts == {"primary_key": True}

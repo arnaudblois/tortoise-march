@@ -281,10 +281,10 @@ class PostgresSchemaEditor(SchemaEditor):
             parts.append("PRIMARY KEY")
 
         # null=False → NOT NULL (default is NOT NULL unless explicitly nullable)
-        if not options.get("null", False):
+        if not options.get("null", False) and not options.get("primary_key"):
             parts.append("NOT NULL")
 
-        if options.get("unique"):
+        if options.get("unique") and not options.get("primary_key"):
             parts.append("UNIQUE")
 
         # ---- default -----------------------------------------------------
@@ -450,14 +450,22 @@ class PostgresSchemaEditor(SchemaEditor):
                 )
 
         # DEFAULT
+        # Render defaults to SQL so we only emit changes when the actual SQL
+        # literal differs (e.g., callable vs literal string).
         if old_options.get("default") != new_options.get("default"):
-            rendered = self._render_default_sql(new_options.get("default"))
-            if rendered is not None:
+            old_rendered = self._render_default_sql(old_options.get("default"))
+            new_rendered = self._render_default_sql(new_options.get("default"))
+            if old_rendered == new_rendered:
+                # No-op if both render to the same SQL (or both non-renderable).
+                pass
+            elif new_rendered is not None:
                 statements.append(
                     f"ALTER TABLE {self._q_ident(db_table.lower())} "
-                    f"ALTER COLUMN {self._q_ident(field_name)} SET DEFAULT {rendered};",
+                    f"ALTER COLUMN {self._q_ident(field_name)} "
+                    f"SET DEFAULT {new_rendered};",
                 )
-            else:
+            elif old_rendered is not None:
+                # New default is effectively NULL/unset: drop existing default.
                 statements.append(
                     f"ALTER TABLE {self._q_ident(db_table.lower())} "
                     f"ALTER COLUMN {self._q_ident(field_name)} DROP DEFAULT;",

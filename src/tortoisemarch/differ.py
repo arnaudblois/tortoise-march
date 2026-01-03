@@ -58,6 +58,11 @@ def _options_for_alter(fs) -> dict:
     # always include abstract type for AlterField rendering/diffing
     opts["type"] = fs.field_type
 
+    if opts.get("primary_key"):
+        # Strip redundant flags for PKs (unique/index implied, null always False)
+        for k in ("unique", "index", "null"):
+            opts.pop(k, None)
+
     # For relational fields, fill in implicit defaults so missing keys
     # don't produce spurious alters when comparing to explicit options.
     if fs.field_type in FK_TYPES:

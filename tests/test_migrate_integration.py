@@ -90,7 +90,7 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
     sql = await migrate(tortoise_conf=tortoise_orm, location=migrations_dir, sql=True)
     assert sql == (
         'CREATE TABLE "book" ('
-        '"id" UUID PRIMARY KEY NOT NULL UNIQUE, '
+        '"id" UUID PRIMARY KEY, '
         '"title" VARCHAR(200) NOT NULL'
         ");"
     )
@@ -129,7 +129,7 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
     sql = await migrate(tortoise_conf=tortoise_orm, location=migrations_dir, sql=True)
     assert sql == (
         'CREATE TABLE "author" ('
-        '"id" UUID PRIMARY KEY NOT NULL UNIQUE, '
+        '"id" UUID PRIMARY KEY, '
         '"is_superuser" BOOLEAN NOT NULL DEFAULT FALSE, '
         '"name" VARCHAR(200) NOT NULL'
         ");"
@@ -356,7 +356,7 @@ async def test_migrate_rolls_back_and_not_recorded_on_failure(tmp_path: Path):
         assert "0001_boom" not in applied
         # Table should not exist
         conn = Tortoise.get_connection("default")
-        _, rows = await conn.execute_query(
+        rows = await conn.execute_query_dict(
             "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
             "WHERE table_name='boom');",
             [],

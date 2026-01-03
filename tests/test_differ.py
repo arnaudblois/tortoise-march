@@ -317,6 +317,41 @@ def test_meta_indexes_respect_db_column_override():
     assert create_idx[0].columns == ("p_id",)
 
 
+def test_callable_default_sentinel_normalized_between_old_and_new():
+    """Defaults 'callable' vs 'python_callable' should not trigger alters."""
+    old = project(
+        {
+            "Book": model(
+                "Book",
+                [
+                    (
+                        "id",
+                        "UUIDField",
+                        {"default": "python_callable", "primary_key": True},
+                    ),
+                ],
+            ),
+        },
+    )
+    new = project(
+        {
+            "Book": model(
+                "Book",
+                [
+                    (
+                        "id",
+                        "UUIDField",
+                        {"default": "python_callable", "primary_key": True},
+                    ),
+                ],
+            ),
+        },
+    )
+
+    ops = diff_states(old, new)
+    assert not any(isinstance(op, AlterField) for op in ops)
+
+
 def test_detects_model_rename_with_custom_table_name():
     """Renaming a model + table should emit RenameModel, not drop/create."""
     shared_fields = [
