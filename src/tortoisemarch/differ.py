@@ -162,8 +162,26 @@ def _model_indexes(ms: ModelState) -> set[tuple[tuple[str, ...], bool]]:
     meta = ms.meta or {}
     indexes = set()
     for cols, unique in meta.get("indexes", []):
-        indexes.add((tuple(cols), bool(unique)))
+        indexes.add((_physical_index_columns(ms, tuple(cols)), bool(unique)))
     return indexes
+
+
+def _physical_index_columns(ms: ModelState, cols: tuple[str, ...]) -> tuple[str, ...]:
+    """Map logical field names to physical DB column names for indexes."""
+    physical: list[str] = []
+    for col in cols:
+        fs = ms.field_states.get(col.lower())
+        if fs:
+            if fs.options.get("db_column"):
+                physical.append(fs.options["db_column"])
+                continue
+            if fs.field_type in FK_TYPES or fs.field_type == "OneToOneFieldInstance":
+                physical.append(f"{fs.name}_id")
+                continue
+            physical.append(fs.name)
+        else:
+            physical.append(col)
+    return tuple(physical)
 
 
 def _detect_model_renames(  # noqa: C901

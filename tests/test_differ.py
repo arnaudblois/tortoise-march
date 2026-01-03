@@ -258,6 +258,65 @@ def test_meta_indexes_emit_create_and_remove_index():
     assert set(creates[0].columns) == {"status", "role"}
 
 
+def test_meta_indexes_use_physical_fk_columns():
+    """Index SQL should use DB column names for FK/OneToOne fields."""
+    ms = model(
+        "Member",
+        [
+            (
+                "person",
+                "ForeignKeyFieldInstance",
+                {
+                    "related_table": "person",
+                    "referenced_type": "UUIDField",
+                    "to_field": "id",
+                },
+            ),
+            (
+                "location",
+                "ForeignKeyFieldInstance",
+                {
+                    "db_column": "loc_id",
+                    "related_table": "location",
+                    "referenced_type": "UUIDField",
+                    "to_field": "id",
+                },
+            ),
+        ],
+        meta={"indexes": [(("person", "location"), False)]},
+    )
+
+    ops = diff_states(project({}), project({"Member": ms}))
+    create_idx = [op for op in ops if isinstance(op, CreateIndex)]
+    assert create_idx
+    assert create_idx[0].columns == ("person_id", "loc_id")
+
+
+def test_meta_indexes_respect_db_column_override():
+    """Explicit db_column should be used when rendering indexes."""
+    ms = model(
+        "Member",
+        [
+            (
+                "person",
+                "ForeignKeyFieldInstance",
+                {
+                    "db_column": "p_id",
+                    "related_table": "person",
+                    "referenced_type": "UUIDField",
+                    "to_field": "id",
+                },
+            ),
+        ],
+        meta={"indexes": [(("person",), False)]},
+    )
+
+    ops = diff_states(project({}), project({"Member": ms}))
+    create_idx = [op for op in ops if isinstance(op, CreateIndex)]
+    assert create_idx
+    assert create_idx[0].columns == ("p_id",)
+
+
 def test_detects_model_rename_with_custom_table_name():
     """Renaming a model + table should emit RenameModel, not drop/create."""
     shared_fields = [
