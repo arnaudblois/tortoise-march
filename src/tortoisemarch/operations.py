@@ -12,6 +12,7 @@ from typing import Any
 
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 from tortoisemarch.schema_filtering import (
+    _value_for_migration_code,
     column_sort_key,
     compact_opts_for_code,
     is_schema_field_type,
@@ -33,6 +34,14 @@ def _changed_only(old: dict, new: dict) -> tuple[dict[str, Any], dict[str, Any]]
             old_out[k] = old.get(k)
             new_out[k] = new.get(k)
     return old_out, new_out
+
+
+def _sanitize_options_for_code(opts: dict[str, Any]) -> dict[str, Any]:
+    """Normalise option values so they are safe to embed in migration code."""
+    clean: dict[str, Any] = {}
+    for k, v in opts.items():
+        clean[k] = _value_for_migration_code(v)
+    return clean
 
 
 def default_index_name(db_table: str, columns: tuple[str, ...], *, unique: bool) -> str:
@@ -422,8 +431,8 @@ class AlterField(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
-        old_opts = dict(self.old_options)
-        new_opts = dict(self.new_options)
+        old_opts = _sanitize_options_for_code(dict(self.old_options))
+        new_opts = _sanitize_options_for_code(dict(self.new_options))
 
         old_changed, new_changed = _changed_only(old_opts, new_opts)
         old_changed["type"] = old_opts["type"]

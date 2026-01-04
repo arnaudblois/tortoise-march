@@ -19,6 +19,7 @@ Rules:
 """
 
 from difflib import SequenceMatcher
+from enum import Enum
 
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.model_state import ModelState, ProjectState
@@ -43,6 +44,8 @@ from tortoisemarch.schema_filtering import FK_TYPES, is_schema_field_type
 def _options_with_type(fs) -> dict:
     """Return field options plus its abstract type under the key 'type'."""
     opts = dict(fs.options)
+    if isinstance(opts.get("default"), Enum):
+        opts["default"] = opts["default"].value
     opts.setdefault("type", fs.field_type)
     return opts
 
@@ -55,6 +58,8 @@ def _options_for_alter(fs) -> dict:
     ALTER statements can be generated deterministically.
     """
     opts = dict(fs.options)
+    if isinstance(opts.get("default"), Enum):
+        opts["default"] = opts["default"].value
     # always include abstract type for AlterField rendering/diffing
     opts["type"] = fs.field_type
 

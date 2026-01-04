@@ -16,6 +16,7 @@ Notes / limitations:
 """
 
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Any
 
 from tortoise import BaseDBAsyncClient
@@ -203,6 +204,8 @@ class PostgresSchemaEditor(SchemaEditor):
 
     def _render_default_sql(self, default: Any) -> str | None:
         """Render a Python default value to a PostgreSQL literal, if possible."""
+        if isinstance(default, Enum):
+            default = default.value
         if default is None:
             return None
         if isinstance(default, str) and default in PY_CALLABLE_SENTINELS:

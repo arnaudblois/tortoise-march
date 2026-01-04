@@ -1,5 +1,7 @@
 """Test that the ops of the Schema Editor can be executed correctly."""
 
+from enum import Enum
+
 import asyncpg
 import pytest
 
@@ -136,6 +138,49 @@ async def test_alter_field_nullability_and_default(schema_editor):
             "WHERE table_name='user_account' AND column_name='email'",
         )
         assert "unknown@example.com" in (column_default or "")
+    finally:
+        await conn.close()
+
+
+async def test_alter_field_accepts_enum_default(schema_editor):
+    """Enum defaults should be coerced to their underlying value for SQL."""
+
+    class Status(Enum):
+        DRAFT = "draft"
+        SENT = "sent"
+
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute('DROP TABLE IF EXISTS "msg" CASCADE')
+        await conn.execute(
+            'CREATE TABLE "msg" (id SERIAL PRIMARY KEY, status VARCHAR(20))',
+        )
+
+        op = AlterField(
+            model_name="Msg",
+            db_table="msg",
+            field_name="status",
+            old_options={
+                "type": "CharField",
+                "null": True,
+                "max_length": 20,
+                "default": None,
+            },
+            new_options={
+                "type": "CharField",
+                "null": False,
+                "max_length": 20,
+                "default": Status.SENT,
+            },
+        )
+
+        await op.apply(conn, schema_editor)
+
+        default_sql = await conn.fetchval(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_name='msg' AND column_name='status'",
+        )
+        assert "sent" in (default_sql or "")
     finally:
         await conn.close()
 

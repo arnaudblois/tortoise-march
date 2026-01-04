@@ -1,5 +1,7 @@
 """Test that operations are correctly updating the ProjectSState."""
 
+from enum import Enum
+
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 from tortoisemarch.operations import (
     AddField,
@@ -205,6 +207,26 @@ def test_alter_field_with_rename_via_new_name():
     fs = fields["full_name"]
     assert fs.field_type == "CharField"
     assert fs.max_length == 200  # noqa: PLR2004
+
+
+def test_alter_field_to_code_serializes_enum_default():
+    """Ensure AlterField.to_code normalises Enum defaults to literal values."""
+
+    class Status(Enum):
+        DRAFT = "draft"
+        SENT = "sent"
+
+    op = AlterField(
+        model_name="Message",
+        db_table="message",
+        field_name="status",
+        old_options={"type": "CharField", "default": None},
+        new_options={"type": "CharField", "default": Status.DRAFT},
+    )
+
+    code = op.to_code()
+    assert "<Status.DRAFT" not in code  # enum instance must not leak
+    assert "'draft'" in code  # value rendered as literal
 
 
 def test_add_field_fk_metadata_preserved_in_state():
