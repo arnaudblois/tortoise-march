@@ -87,6 +87,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     mig.add_argument(
+        "target",
+        nargs="?",
+        help=(
+            "Optional migration target (e.g. 0002 or 0002_add_user). "
+            "If omitted, runs all pending migrations forward. "
+            "If provided, will migrate forward or backward to reach that target."
+        ),
+    )
+    mig.add_argument(
         "--sql",
         action="store_true",
         help="Display the SQL that would run, do not execute.",
@@ -152,6 +161,7 @@ def main() -> None:
                     location=args.location,
                     sql=args.sql,
                     fake=args.fake,
+                    target=args.target,
                 ),
             )
         else:

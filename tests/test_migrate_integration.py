@@ -451,3 +451,171 @@ async def test_runpython_data_migration_uses_orm(tmp_path: Path):
     titles = [b.title for b in books]
     assert titles == ["DUNE", "THE HOBBIT"]
     await Tortoise.close_connections()
+
+
+async def test_migrate_to_target_forward_and_backward(tmp_path: Path):  # noqa: PLR0915
+    """Migrate up to a target and back down again."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").touch()
+
+    # Minimal models module so Tortoise.init can register an app
+    placeholder = tmp_path / "placeholder_models.py"
+    placeholder.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import models
+
+
+            class Placeholder(models.Model):
+                class Meta:
+                    table = "__placeholder__"
+            """,
+        ),
+    )
+    sys.path.insert(0, str(tmp_path))
+
+    def write_migration(filename: str, body: str) -> None:
+        (migrations_dir / filename).write_text(textwrap.dedent(body))
+
+    write_migration(
+        "0001_initial.py",
+        """
+        from typing import ClassVar
+        from tortoisemarch.base import BaseMigration
+        from tortoisemarch.operations import CreateModel
+
+
+        class Migration(BaseMigration):
+            operations: ClassVar[list] = [
+                CreateModel(
+                    name="Foo",
+                    db_table="foo",
+                    fields=[
+                        ("id", "IntField", {"primary_key": True}),
+                    ],
+                ),
+            ]
+        """,
+    )
+
+    write_migration(
+        "0002_add_bar.py",
+        """
+        from typing import ClassVar
+        from tortoisemarch.base import BaseMigration
+        from tortoisemarch.operations import AddField
+
+
+        class Migration(BaseMigration):
+            operations: ClassVar[list] = [
+                AddField(
+                    model_name="Foo",
+                    db_table="foo",
+                    field_name="bar",
+                    field_type="CharField",
+                    options={"max_length": 50, "null": True},
+                ),
+            ]
+        """,
+    )
+
+    conf = {
+        "connections": {"default": "postgres://postgres:test@localhost:5445/testdb"},
+        "apps": {
+            "models": {
+                "models": ["placeholder_models"],
+                "default_connection": "default",
+            },
+        },
+    }
+
+    # Migrate to 0001
+    await migrate(tortoise_conf=conf, location=migrations_dir, target="0001")
+    async with tortoise_context(conf):
+        applied = await MigrationRecorder.list_applied()
+        assert applied == ["0001_initial"]
+        conn = Tortoise.get_connection("default")
+        recorder_rows = await conn.execute_query_dict(
+            "SELECT name FROM tortoisemarch_applied_migrations ORDER BY name;",
+        )
+        assert [r["name"] for r in recorder_rows] == ["0001_initial"]
+        rows = await conn.execute_query_dict(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='foo' ORDER BY column_name;",
+        )
+        cols = [r["column_name"] for r in rows]
+        assert cols == ["id"]
+        # Verify bar truly absent and recorder unchanged
+        has_bar = await conn.execute_query_dict(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='foo' AND column_name='bar';",
+        )
+        assert has_bar == []
+        recorder_rows = await conn.execute_query_dict(
+            "SELECT name FROM tortoisemarch_applied_migrations ORDER BY name;",
+        )
+        assert [r["name"] for r in recorder_rows] == ["0001_initial"]
+
+    # Migrate forward to 0002
+    await migrate(tortoise_conf=conf, location=migrations_dir, target="0002")
+    async with tortoise_context(conf):
+        applied = await MigrationRecorder.list_applied()
+        assert applied == ["0001_initial", "0002_add_bar"]
+        conn = Tortoise.get_connection("default")
+        recorder_rows = await conn.execute_query_dict(
+            "SELECT name FROM tortoisemarch_applied_migrations ORDER BY name;",
+        )
+        assert [r["name"] for r in recorder_rows] == ["0001_initial", "0002_add_bar"]
+        rows = await conn.execute_query_dict(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='foo' ORDER BY column_name;",
+        )
+        cols = [r["column_name"] for r in rows]
+        assert cols == ["bar", "id"]
+
+    # Preview rollback SQL from 0002 -> 0001
+    sql_preview = await migrate(
+        tortoise_conf=conf,
+        location=migrations_dir,
+        target="0001",
+        sql=True,
+    )
+    assert sql_preview == 'ALTER TABLE "foo" DROP COLUMN IF EXISTS "bar";'
+
+    # Roll back to 0001 (real)
+    await migrate(tortoise_conf=conf, location=migrations_dir, target="0001")
+    async with tortoise_context(conf):
+        applied = await MigrationRecorder.list_applied()
+        assert applied == ["0001_initial"]
+        conn = Tortoise.get_connection("default")
+        recorder_rows = await conn.execute_query_dict(
+            "SELECT name FROM tortoisemarch_applied_migrations ORDER BY name;",
+        )
+        assert [r["name"] for r in recorder_rows] == ["0001_initial"]
+        rows = await conn.execute_query_dict(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='foo' ORDER BY column_name;",
+        )
+        cols = [r["column_name"] for r in rows]
+        assert cols == ["id"]
+
+    # Fake rollback back to 0002 (state only)
+    await migrate(tortoise_conf=conf, location=migrations_dir, target="0002", fake=True)
+    async with tortoise_context(conf):
+        applied = await MigrationRecorder.list_applied()
+        assert applied == ["0001_initial", "0002_add_bar"]
+        conn = Tortoise.get_connection("default")
+        rows = await conn.execute_query_dict(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='foo' ORDER BY column_name;",
+        )
+        cols = [r["column_name"] for r in rows]
+        # Schema unchanged by fake move
+        assert cols == ["id"]
+        recorder_rows = await conn.execute_query_dict(
+            "SELECT name FROM tortoisemarch_applied_migrations ORDER BY name;",
+        )
+        assert [r["name"] for r in recorder_rows] == ["0001_initial", "0002_add_bar"]
+
+    sys.path.remove(str(tmp_path))

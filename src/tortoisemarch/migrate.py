@@ -43,12 +43,49 @@ async def tortoise_context(conf: dict):
         await Tortoise.close_connections()
 
 
-async def migrate(
+def resolve_target_name(target: str, all_names: list[str]) -> str:
+    """Resolve a user-provided target (number or prefix) to a migration name."""
+    matches = [n for n in all_names if n.startswith(target)]
+    if not matches:
+        msg = f"Unknown migration target '{target}'. Available: {', '.join(all_names)}"
+        raise InvalidMigrationError(msg)
+    if len(matches) > 1:
+        msg = f"Ambiguous migration target '{target}'. Matches: {', '.join(matches)}"
+        raise InvalidMigrationError(msg)
+    return matches[0]
+
+
+def plan_route(
+    applied: set[str],
+    all_names: list[str],
+    target_name: str | None,
+) -> tuple[str, list[str]]:
+    """Compute direction and list of migrations to apply/unapply."""
+    if target_name is None:
+        pending = [n for n in all_names if n not in applied]
+        return ("forward", pending)
+
+    applied_order = [n for n in all_names if n in applied]
+    current_idx = len(applied_order) - 1  # -1 when none applied
+    target_idx = all_names.index(target_name)
+
+    if target_idx == current_idx:
+        return ("noop", [])
+
+    if target_idx > current_idx:
+        return ("forward", all_names[current_idx + 1 : target_idx + 1])
+
+    # backward
+    return ("backward", list(reversed(all_names[target_idx + 1 : current_idx + 1])))
+
+
+async def migrate(  # noqa: C901, PLR0912, PLR0915
     tortoise_conf: dict | None = None,
     location: Path | None = None,
     *,
     sql: bool = False,
     fake: bool = False,
+    target: str | None = None,
 ) -> str | None:
     """Apply all unapplied migrations in order.
 
@@ -56,7 +93,8 @@ async def migrate(
         tortoise_conf: Optional Tortoise ORM config. If omitted, read from pyproject.
         location: Migrations directory. If omitted, read from pyproject.
         sql: If True, print and return the SQL that would run (no execution).
-        fake: If True, mark migrations as applied without running them.
+        fake: If True, mark migrations as applied/unapplied without running them.
+        target: Optional migration name/number to migrate to (forward/backward).
 
     Returns:
         Concatenated SQL string when `sql=True`, otherwise `None`.
@@ -88,43 +126,102 @@ async def migrate(
             await MigrationRecorder.ensure_table()
             applied = set(await MigrationRecorder.list_applied())
 
-            pending_files = [
-                file
-                for file in iter_migration_files(location)
-                if file.stem not in applied
-            ]
-            if not pending_files:
+            files = list(iter_migration_files(location))
+            all_names = [f.stem for f in files]
+            name_to_file = {f.stem: f for f in files}
+            target_name = None
+            if target:
+                target_name = resolve_target_name(target, all_names)
+            else:
+                # default: apply all pending
+                pending = [n for n in all_names if n not in applied]
+                target_name = pending[-1] if pending else None
+
+            if target_name is None:
                 click.echo("✅ No pending migrations.")
                 return "" if sql else None
-            for file in pending_files:
-                name = file.stem
-                click.echo(f"🚀 Migration {name}")
 
-                module = import_module_from_path(file, f"tm_mig_run_{name}")
-                Migration = getattr(module, "Migration", None)  # noqa: N806
-                if Migration is None:
-                    msg = f"Migration file '{file.name}' has no 'Migration' class."
-                    raise InvalidMigrationError(msg)
+            direction, names = plan_route(applied, all_names, target_name)
 
-                if fake:
-                    await MigrationRecorder.record_applied(name)
-                    click.echo(f"⚡️ Marked {name} as applied (fake)")
-                    continue
+            if direction == "noop":
+                click.echo(f"✅ Already at migration {target_name}")
+                return "" if sql else None
 
-                if sql:
-                    statements = await Migration.to_sql(conn, schema_editor)
-                    text = "\n".join(statements)
-                    if text:
-                        click.echo(text)
-                        sql_accum.append(text)
-                    click.echo(f"💡 Migration {name} SQL displayed (not executed)")
-                    continue
+            if direction == "forward":
+                for name in names:
+                    file = name_to_file[name]
+                    click.echo(f"🚀 Migration {name}")
 
-                async with conn._in_transaction():  # noqa: SLF001
-                    tx = Tortoise.get_connection("default")
-                    await Migration.apply(tx, schema_editor)
-                    await MigrationRecorder.record_applied(name)
-                click.echo(f"✅ Migration {name} applied")
+                    module = import_module_from_path(file, f"tm_mig_run_{name}")
+                    Migration = getattr(module, "Migration", None)  # noqa: N806
+                    if Migration is None:
+                        msg = f"Migration file '{file.name}' has no 'Migration' class."
+                        raise InvalidMigrationError(msg)
+
+                    if fake:
+                        await MigrationRecorder.record_applied(name)
+                        click.echo(f"⚡️ Marked {name} as applied (fake)")
+                        continue
+
+                    if sql:
+                        statements = await Migration.to_sql(conn, schema_editor)
+                        text = "\n".join(statements)
+                        if text:
+                            click.echo(text)
+                            sql_accum.append(text)
+                        click.echo(
+                            f"💡 Migration {name} SQL displayed (not executed)",
+                        )
+                        continue
+
+                    async with conn._in_transaction():  # noqa: SLF001
+                        tx = Tortoise.get_connection("default")
+                        await Migration.apply(tx, schema_editor)
+                        await MigrationRecorder.record_applied(name)
+                    click.echo(f"✅ Migration {name} applied")
+            else:
+                for name in names:
+                    file = name_to_file[name]
+                    click.echo(f"⏪ Rolling back {name}")
+
+                    module = import_module_from_path(file, f"tm_mig_run_{name}")
+                    Migration = getattr(module, "Migration", None)  # noqa: N806
+                    if Migration is None:
+                        msg = f"Migration file '{file.name}' has no 'Migration' class."
+                        raise InvalidMigrationError(msg)
+
+                    if sql:
+                        # Capture SQL emitted during unapply without executing.
+                        class _Recorder:
+                            def __init__(self):
+                                self.statements: list[str] = []
+
+                            async def execute_script(self, sql_text: str) -> None:
+                                for stmt in sql_text.split("\n"):
+                                    if stmt.strip():
+                                        self.statements.append(stmt)
+
+                            async def execute(self, sql_text: str) -> None:
+                                self.statements.append(sql_text)
+
+                        recorder = _Recorder()
+                        await Migration.unapply(recorder, schema_editor)
+                        sql_accum.extend(recorder.statements)
+                        for stmt in recorder.statements:
+                            click.echo(stmt)
+                        click.echo(f"💡 Rollback {name} SQL displayed (not executed)")
+                        continue
+
+                    if fake:
+                        await MigrationRecorder.unrecord_applied(name)
+                        click.echo(f"⚡️ Marked {name} as unapplied (fake)")
+                        continue
+
+                    async with conn._in_transaction():  # noqa: SLF001
+                        tx = Tortoise.get_connection("default")
+                        await Migration.unapply(tx, schema_editor)
+                        await MigrationRecorder.unrecord_applied(name)
+                    click.echo(f"✅ Rolled back {name}")
 
     except (OSError, asyncpg.PostgresError) as exc:
         target = _format_db_target(tortoise_conf)
