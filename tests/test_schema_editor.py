@@ -228,6 +228,29 @@ def test_alter_default_set_expr_and_drop_default():
     assert any("DROP DEFAULT" in s for s in stmts)
 
 
+def test_alter_field_rename_fk_uses_db_column():
+    """Check that renaming a FK renames its DB column, not the logical field name."""
+    ed = PostgresSchemaEditor()
+    stmts = ed.sql_alter_field(
+        db_table="books",
+        field_name="author",
+        old_options={
+            "type": "ForeignKeyFieldInstance",
+            "db_column": "author_id",
+            "related_table": "authors",
+            "related_model": "people.models.Author",
+        },
+        new_options={
+            "type": "ForeignKeyFieldInstance",
+            "db_column": "writer_id",
+            "related_table": "writers",
+            "related_model": "people.models.Writer",
+        },
+        new_name="writer",
+    )
+    assert stmts == ['ALTER TABLE "books" RENAME COLUMN "author_id" TO "writer_id";']
+
+
 def test_schema_editor_refuses_non_schema_field_types():
     """Test that non-schema field types are rejected by the schema editor."""
     ed = PostgresSchemaEditor()

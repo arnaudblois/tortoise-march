@@ -5,16 +5,19 @@ Readable, reliable migrations for Tortoise ORM.
 Tortoise March is a Django-style, Pythonic migration system built for clarity and trust.  
 It tracks model state over time, generates small, readable Python migration files (not raw SQL), and lets you add data migrations when you need them.
 
+Documentation: https://arnaudblois.github.io/tortoise-march/
+
 ---
 
 ## Features
 
-- Diff live models against historical state to generate migrations
-- Plain Python migration files you can read, review, and version
-- Data migrations alongside schema changes
-- Single central migrations folder for simplicity
-- Integration tests against PostgreSQL
-- PostgreSQL support today; squashing and other backends on the roadmap
+- Tracks full model state over time and diffs it to generate migrations
+- Generates readable, Python-based migration files (no raw SQL)
+- Supports custom logic through data migrations
+- Centralised migration folder for simplicity
+- Includes full integration tests with Postgres
+- Supports Postgres only for now
+- Planned squashing and optional per-app mode
 
 ---
 
@@ -27,7 +30,7 @@ poetry add tortoise-march
 Developing locally:
 
 ```bash
-git clone https://github.com/yourname/tortoise-march.git
+git clone https://github.com/arnaudblois/tortoise-march.git
 cd tortoise-march
 poetry install
 ```
@@ -36,7 +39,7 @@ poetry install
 
 ## Quick start
 
-Make sure your models are registered with Tortoise:
+Tortoise March relies on Tortoise’s app registry, so your models must be initialised before running commands. Make sure your models are registered with Tortoise:
 
 ```python
 # e.g. myapp/__init__.py
@@ -58,6 +61,12 @@ poetry run tortoisemarch migrate
 ```
 
 New files will appear under `tortoisemarch/migrations/` with operations like `CreateModel`, `AddField`, `RenameField`, and friends.
+
+`migrate` options:
+
+- `tortoisemarch migrate 0002` migrates forward or backward to reach that target (number or unique prefix).
+- `--sql` previews the SQL (forward or backward) without executing.
+- `--fake` updates the migration recorder without running SQL (useful if you applied changes manually).
 
 ---
 

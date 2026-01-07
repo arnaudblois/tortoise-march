@@ -476,9 +476,9 @@ class PostgresSchemaEditor(SchemaEditor):
 
         # (Optional) RENAME as a separate statement at the end
         if new_name and new_name != field_name:
-            statements.append(
-                self.sql_rename_field(db_table, field_name, new_name),
-            )
+            old_col = old_options.get("db_column") or field_name
+            new_col = new_options.get("db_column") or new_name
+            statements.append(self.sql_rename_field(db_table, old_col, new_col))
 
         # Index creation/drop based on index flag changes
         old_index = self._should_index(old_options)
