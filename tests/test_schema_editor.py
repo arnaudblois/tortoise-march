@@ -251,6 +251,25 @@ def test_alter_field_rename_fk_uses_db_column():
     assert stmts == ['ALTER TABLE "books" RENAME COLUMN "author_id" TO "writer_id";']
 
 
+def test_sql_create_index_and_unique_index():
+    """Index SQL should quote names and respect uniqueness and column lists."""
+    ed = PostgresSchemaEditor()
+    nonuniq = ed.sql_create_index(
+        db_table="foo",
+        name="foo_a_b_idx",
+        columns=("a", "b"),
+        unique=False,
+    )
+    uniq = ed.sql_create_index(
+        db_table="foo",
+        name="foo_a_b_uniq",
+        columns=("a", "b"),
+        unique=True,
+    )
+    assert nonuniq == 'CREATE INDEX "foo_a_b_idx" ON "foo" ("a", "b");'
+    assert uniq == 'CREATE UNIQUE INDEX "foo_a_b_uniq" ON "foo" ("a", "b");'
+
+
 def test_schema_editor_refuses_non_schema_field_types():
     """Test that non-schema field types are rejected by the schema editor."""
     ed = PostgresSchemaEditor()

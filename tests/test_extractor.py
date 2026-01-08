@@ -141,8 +141,8 @@ async def test_extract_project_state_multiple_apps(tmp_path):
         sys.path.remove(str(tmp_path))
 
 
-def test_extract_model_state_respects_index_together(tmp_path):
-    """index_together and unique_together should be captured as meta indexes."""
+def test_extract_model_state_respects_indexes_and_unique_together(tmp_path):
+    """Test that indexes and unique_together are captured from Meta."""
     mod = tmp_path / "indexed_models.py"
     mod.write_text(
         textwrap.dedent(
@@ -155,7 +155,7 @@ def test_extract_model_state_respects_index_together(tmp_path):
                 c = fields.IntField()
 
                 class Meta:
-                    index_together = (("a", "b"),)
+                    indexes = (("a", "b"),)
                     unique_together = (("b", "c"),)
             """,
         ),

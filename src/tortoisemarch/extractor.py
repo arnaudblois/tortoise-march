@@ -325,20 +325,6 @@ def extract_model_state(model_cls: type[Model]) -> ModelState:  # noqa: C901
         if cols:
             meta_indexes.append((cols, False))
 
-    raw_index_together = (
-        getattr(meta, "index_together", None)
-        or getattr(
-            meta_config,
-            "index_together",
-            None,
-        )
-        or ()
-    )
-    for idx in raw_index_together:
-        cols = tuple(str(c).lower() for c in idx)
-        if cols:
-            meta_indexes.append((cols, False))
-
     raw_unique = (
         getattr(meta, "unique_together", None)
         or getattr(
