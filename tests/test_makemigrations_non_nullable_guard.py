@@ -16,12 +16,20 @@ def test_add_non_nullable_no_default_on_existing_table_raises():
         field_type="IntField",
         options={"null": False},  # no default, no db_default
     )
-    with pytest.raises(InvalidMigrationError) as e:
+    with pytest.raises(InvalidMigrationError) as error:
         _validate_non_nullable_adds_and_warn_alters([op])
 
-    msg = str(e.value)
-    assert "non-nullable" in msg.lower()
-    assert "User.age" in msg
+    assert str(error.value) == (
+        "Cannot generate migration:\n"
+        "You added a non-nullable field without a default "
+        "(cannot backfill existing rows).\n"
+        "Fix by adding a default or use this safe sequence:\n"
+        "  1) Add the field as nullable.\n"
+        "  2) Create a data migration to backfill it "
+        "(run: tortoisemarch makemigrations --empty).\n"
+        "  3) Make the field non-nullable and re-run makemigrations.\n\n"
+        "Problems:\n  - User.age"
+    )
 
 
 def test_add_nullable_no_default_is_allowed():

@@ -92,9 +92,12 @@ def _validate_non_nullable_adds_and_warn_alters(  # noqa: C901, PLR0912
             "Cannot generate migration:\n"
             "You added a non-nullable field without a default "
             "(cannot backfill existing rows).\n"
-            "Fix by adding a default or add it as nullable "
-            "first then backfill then alter.\n\n"
-            "Problems:\n  - " + "\n  - ".join(problems_add),
+            "Fix by adding a default or use this safe sequence:\n"
+            "  1) Add the field as nullable.\n"
+            "  2) Create a data migration to backfill it "
+            "(run: tortoisemarch makemigrations --empty).\n"
+            "  3) Make the field non-nullable and re-run makemigrations.\n\n"
+            "Problems:\n  - " + "\n  - ".join(problems_add)
         )
         raise InvalidMigrationError(msg)
 
@@ -110,7 +113,7 @@ def _validate_non_nullable_adds_and_warn_alters(  # noqa: C901, PLR0912
             msg = (
                 "Migration cancelled.\n"
                 "Backfill NULL values first (data migration), "
-                "then re-run makemigrations.",
+                "then re-run makemigrations."
             )
             raise InvalidMigrationError(msg)
 

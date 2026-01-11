@@ -22,7 +22,7 @@ from difflib import SequenceMatcher
 from enum import Enum
 
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.model_state import ModelState, ProjectState
+from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 from tortoisemarch.operations import (
     AddField,
     AlterField,
@@ -333,6 +333,49 @@ def _toposort_models_by_fk(model_states: dict[str, ModelState]) -> list[str]:
 
 
 # ----------------------------- Diff States ---------------------------------
+def _resolved_db_column(fs: FieldState) -> str | None:
+    """Return the physical DB column name for a field, if derivable."""
+    col = fs.options.get("db_column")
+    if col:
+        return col
+    if fs.field_type in FK_TYPES:
+        return f"{fs.name}_id"
+    return None
+
+
+def _rename_or_alter_field_op(  # noqa: PLR0913
+    *,
+    model_name: str,
+    db_table: str,
+    old_name: str,
+    new_name: str,
+    old_fs: FieldState,
+    new_fs: FieldState,
+) -> Operation:
+    """Return a RenameField or AlterField op depending on attribute changes."""
+    if _same_except_name(old_fs, new_fs):
+        old_col = _resolved_db_column(old_fs)
+        new_col = _resolved_db_column(new_fs)
+        old_db_column = old_col if old_col and old_col != old_name else None
+        new_db_column = new_col if new_col and new_col != new_name else None
+        return RenameField(
+            model_name=model_name,
+            db_table=db_table,
+            old_name=old_name,
+            new_name=new_name,
+            old_db_column=old_db_column,
+            new_db_column=new_db_column,
+        )
+    return AlterField(
+        model_name=model_name,
+        db_table=db_table,
+        field_name=old_name,
+        old_options=_options_for_alter(old_fs),
+        new_options=_options_for_alter(new_fs),
+        new_name=new_name,
+    )
+
+
 def _diff_model_fields(
     ops: list[Operation],
     *,
@@ -355,41 +398,34 @@ def _diff_model_fields(
         if old_name in removed_names and new_name in added_names:
             old_fs = old_fields[old_name]
             new_fs = new_fields[new_name]
-
-            if _same_except_name(old_fs, new_fs):
-                ops.append(
-                    RenameField(
-                        model_name=model_name,
-                        db_table=new_model.db_table,
-                        old_name=old_name,
-                        new_name=new_name,
-                    ),
-                )
-            else:
-                ops.append(
-                    AlterField(
-                        model_name=model_name,
-                        db_table=new_model.db_table,
-                        field_name=old_name,
-                        old_options=_options_for_alter(old_fs),
-                        new_options=_options_for_alter(new_fs),
-                        new_name=new_name,
-                    ),
-                )
+            ops.append(
+                _rename_or_alter_field_op(
+                    model_name=model_name,
+                    db_table=new_model.db_table,
+                    old_name=old_name,
+                    new_name=new_name,
+                    old_fs=old_fs,
+                    new_fs=new_fs,
+                ),
+            )
 
             removed_names.remove(old_name)
             added_names.remove(new_name)
         # else: ignore invalid pairs silently
 
     # Remaining removed -> RemoveField
-    ops.extend(
-        RemoveField(
-            model_name=model_name,
-            db_table=new_model.db_table,
-            field_name=fname,
+    for fname in sorted(removed_names):
+        fs = old_fields[fname]
+        col = _resolved_db_column(fs)
+        db_column = col if col and col != fs.name else None
+        ops.append(
+            RemoveField(
+                model_name=model_name,
+                db_table=new_model.db_table,
+                field_name=fname,
+                db_column=db_column,
+            ),
         )
-        for fname in sorted(removed_names)
-    )
 
     # Remaining added -> AddField
     for fname in sorted(added_names):

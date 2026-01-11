@@ -13,6 +13,7 @@ from tortoisemarch.operations import (
     RemoveModel,
     RenameField,
     RenameModel,
+    RunPython,
 )
 from tortoisemarch.schema_editor import PostgresSchemaEditor
 
@@ -281,6 +282,19 @@ def test_to_code_is_stringy():
         s = op.to_code()
         assert isinstance(s, str)
         assert s.strip()  # non-empty
+
+
+async def test_runpython_accepts_zero_arg_callable():
+    """RunPython should accept callables that take no arguments."""
+    called = {"value": False}
+
+    async def forwards():
+        called["value"] = True
+
+    op = RunPython(forwards)
+    await op.apply(None, None)
+
+    assert called["value"] is True
 
 
 async def test_createindex_and_removeindex_to_code_and_mutation():

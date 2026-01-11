@@ -77,6 +77,7 @@ class SchemaEditor(ABC):
         conn: BaseDBAsyncClient,
         db_table: str,
         field_name: str,
+        db_column: str | None = None,
     ) -> None:
         """Remove a column from a table."""
 
@@ -93,12 +94,14 @@ class SchemaEditor(ABC):
         """Alter constraints/defaults on a column and optionally rename it."""
 
     @abstractmethod
-    async def rename_field(
+    async def rename_field(  # noqa: PLR0913
         self,
         conn: BaseDBAsyncClient,
         db_table: str,
         old_name: str,
         new_name: str,
+        old_db_column: str | None = None,
+        new_db_column: str | None = None,
     ) -> None:
         """Rename a column."""
 
@@ -139,7 +142,12 @@ class SchemaEditor(ABC):
         """Return SQL to add a column."""
 
     @abstractmethod
-    def sql_remove_field(self, db_table: str, field_name: str) -> str:
+    def sql_remove_field(
+        self,
+        db_table: str,
+        field_name: str,
+        db_column: str | None = None,
+    ) -> str:
         """Return SQL to remove a column."""
 
     @abstractmethod
@@ -154,7 +162,14 @@ class SchemaEditor(ABC):
         """Return SQL to alter a column and optionally rename it."""
 
     @abstractmethod
-    def sql_rename_field(self, db_table: str, old_name: str, new_name: str) -> str:
+    def sql_rename_field(
+        self,
+        db_table: str,
+        old_name: str,
+        new_name: str,
+        old_db_column: str | None = None,
+        new_db_column: str | None = None,
+    ) -> str:
         """Return SQL to rename a column."""
 
     @abstractmethod
@@ -222,6 +237,26 @@ class PostgresSchemaEditor(SchemaEditor):
         raise TypeError(msg)
 
     @staticmethod
+    def _field_type_from_options(options: dict[str, Any] | None) -> str | None:
+        """Return the abstract field type from options, if present."""
+        if not options:
+            return None
+        return options.get("type") or options.get("field_type")
+
+    def _resolve_column_name(
+        self,
+        field_name: str,
+        field_type: str | None,
+        options: dict[str, Any] | None,
+    ) -> str:
+        """Resolve the database column name for a field."""
+        if options and options.get("db_column"):
+            return options["db_column"]
+        if field_type in FK_TYPES:
+            return f"{field_name}_id"
+        return field_name
+
+    @staticmethod
     def _normalize_on_delete(val: str | None) -> str | None:
         """Normalize on_delete to a valid SQL clause."""
         if not val:
@@ -274,7 +309,7 @@ class PostgresSchemaEditor(SchemaEditor):
         base_sql_type = self.sql_for_field(field_type, options)
 
         # Physical column name (db_column override supported)
-        colname = options.get("db_column") or name
+        colname = self._resolve_column_name(name, field_type, options)
 
         parts: list[str] = [f"{self._q_ident(colname)} {base_sql_type}"]
 
@@ -339,9 +374,9 @@ class PostgresSchemaEditor(SchemaEditor):
             f"CREATE TABLE {self._q_ident(db_table.lower())} ({col_sql});",
         ]
 
-        for name, _, opts in fields:
+        for name, ftype, opts in fields:
             if self._should_index(opts):
-                colname = opts.get("db_column") or name
+                colname = self._resolve_column_name(name, ftype, opts)
                 statements.append(
                     self._render_create_index_sql(db_table, (colname,), unique=False),
                 )
@@ -369,23 +404,29 @@ class PostgresSchemaEditor(SchemaEditor):
             f"ADD COLUMN {self._column_def(field_name, field_type, options)};"
         )
         if self._should_index(options):
-            colname = options.get("db_column") or field_name
+            colname = self._resolve_column_name(field_name, field_type, options)
             sql += (
                 f"\n{self._render_create_index_sql(db_table, (colname,), unique=False)}"
             )
         return sql
 
-    def sql_remove_field(self, db_table: str, field_name: str) -> str:
+    def sql_remove_field(
+        self,
+        db_table: str,
+        field_name: str,
+        db_column: str | None = None,
+    ) -> str:
         """Write the SQL to remove a field."""
+        colname = db_column or field_name
         return (
             f"ALTER TABLE {self._q_ident(db_table.lower())} "
-            f"DROP COLUMN IF EXISTS {self._q_ident(field_name)};"
+            f"DROP COLUMN IF EXISTS {self._q_ident(colname)};"
         )
 
     def _sql_alter_type_if_supported(
         self,
         db_table: str,
-        field_name: str,
+        column_name: str,
         old: dict[str, Any],
         new: dict[str, Any],
     ) -> list[str]:
@@ -414,13 +455,13 @@ class PostgresSchemaEditor(SchemaEditor):
         if old_len != new_len:
             stmts.append(
                 f"ALTER TABLE {self._q_ident(db_table.lower())} "
-                f"ALTER COLUMN {self._q_ident(field_name)} "
+                f"ALTER COLUMN {self._q_ident(column_name)} "
                 f"TYPE VARCHAR({new_len});",
             )
 
         return stmts
 
-    def sql_alter_field(
+    def sql_alter_field(  # noqa: C901
         self,
         db_table: str,
         field_name: str,
@@ -430,11 +471,23 @@ class PostgresSchemaEditor(SchemaEditor):
     ) -> list[str]:
         """Return the sql to alter the field in Postgres."""
         statements: list[str] = []
+        field_type = self._field_type_from_options(
+            new_options,
+        ) or self._field_type_from_options(old_options)
+        column_opts: dict[str, Any] = {}
+        db_column = new_options.get("db_column") or old_options.get("db_column")
+        if db_column is not None:
+            column_opts["db_column"] = db_column
+        column_name = self._resolve_column_name(
+            field_name,
+            field_type,
+            column_opts or None,
+        )
 
         # Type changes (limited safe cases)
         statements += self._sql_alter_type_if_supported(
             db_table=db_table,
-            field_name=field_name,
+            column_name=column_name,
             old=old_options,
             new=new_options,
         )
@@ -444,12 +497,12 @@ class PostgresSchemaEditor(SchemaEditor):
             if new_options.get("null", False):
                 statements.append(
                     f"ALTER TABLE {self._q_ident(db_table.lower())} "
-                    f"ALTER COLUMN {self._q_ident(field_name)} DROP NOT NULL;",
+                    f"ALTER COLUMN {self._q_ident(column_name)} DROP NOT NULL;",
                 )
             else:
                 statements.append(
                     f"ALTER TABLE {self._q_ident(db_table.lower())} "
-                    f"ALTER COLUMN {self._q_ident(field_name)} SET NOT NULL;",
+                    f"ALTER COLUMN {self._q_ident(column_name)} SET NOT NULL;",
                 )
 
         # DEFAULT
@@ -464,27 +517,28 @@ class PostgresSchemaEditor(SchemaEditor):
             elif new_rendered is not None:
                 statements.append(
                     f"ALTER TABLE {self._q_ident(db_table.lower())} "
-                    f"ALTER COLUMN {self._q_ident(field_name)} "
+                    f"ALTER COLUMN {self._q_ident(column_name)} "
                     f"SET DEFAULT {new_rendered};",
                 )
             elif old_rendered is not None:
                 # New default is effectively NULL/unset: drop existing default.
                 statements.append(
                     f"ALTER TABLE {self._q_ident(db_table.lower())} "
-                    f"ALTER COLUMN {self._q_ident(field_name)} DROP DEFAULT;",
+                    f"ALTER COLUMN {self._q_ident(column_name)} DROP DEFAULT;",
                 )
 
         # (Optional) RENAME as a separate statement at the end
         if new_name and new_name != field_name:
-            old_col = old_options.get("db_column") or field_name
-            new_col = new_options.get("db_column") or new_name
+            old_col = self._resolve_column_name(field_name, field_type, old_options)
+            new_col = self._resolve_column_name(new_name, field_type, new_options)
             statements.append(self.sql_rename_field(db_table, old_col, new_col))
 
         # Index creation/drop based on index flag changes
         old_index = self._should_index(old_options)
         new_index = self._should_index(new_options)
-        old_colname = old_options.get("db_column") or field_name
-        new_colname = new_options.get("db_column") or new_name or field_name
+        old_colname = self._resolve_column_name(field_name, field_type, old_options)
+        new_field_name = new_name or field_name
+        new_colname = self._resolve_column_name(new_field_name, field_type, new_options)
 
         if old_index and (not new_index or old_colname != new_colname):
             statements.append(
@@ -500,8 +554,17 @@ class PostgresSchemaEditor(SchemaEditor):
 
         return statements
 
-    def sql_rename_field(self, db_table: str, old_name: str, new_name: str) -> str:
+    def sql_rename_field(
+        self,
+        db_table: str,
+        old_name: str,
+        new_name: str,
+        old_db_column: str | None = None,
+        new_db_column: str | None = None,
+    ) -> str:
         """Write the SQL to rename a field."""
+        old_name = old_db_column or old_name
+        new_name = new_db_column or new_name
         return (
             f"ALTER TABLE {self._q_ident(db_table.lower())} "
             f"RENAME COLUMN {self._q_ident(old_name)} TO {self._q_ident(new_name)};"
@@ -570,9 +633,14 @@ class PostgresSchemaEditor(SchemaEditor):
         conn: BaseDBAsyncClient,
         db_table: str,
         field_name: str,
+        db_column: str | None = None,
     ) -> None:
         """Execute the SQL to remove a field."""
-        sql = self.sql_remove_field(db_table, field_name)
+        sql = self.sql_remove_field(
+            db_table,
+            field_name,
+            db_column=db_column,
+        )
         await self._execute(conn, sql)
 
     async def alter_field(  # noqa: PLR0913
@@ -594,15 +662,23 @@ class PostgresSchemaEditor(SchemaEditor):
         ):
             await self._execute(conn, stmt)
 
-    async def rename_field(
+    async def rename_field(  # noqa: PLR0913
         self,
         conn: BaseDBAsyncClient,
         db_table: str,
         old_name: str,
         new_name: str,
+        old_db_column: str | None = None,
+        new_db_column: str | None = None,
     ) -> None:
         """Execute the SQL to rename a column."""
-        sql = self.sql_rename_field(db_table, old_name, new_name)
+        sql = self.sql_rename_field(
+            db_table,
+            old_name,
+            new_name,
+            old_db_column=old_db_column,
+            new_db_column=new_db_column,
+        )
         await self._execute(conn, sql)
 
     async def create_index(

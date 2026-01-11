@@ -142,6 +142,45 @@ async def test_alter_field_nullability_and_default(schema_editor):
         await conn.close()
 
 
+async def test_alter_field_fk_uses_db_column_and_applies(schema_editor):
+    """FK alters should use the backing column name and apply cleanly."""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute('DROP TABLE IF EXISTS "book" CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS "author" CASCADE')
+        await conn.execute('CREATE TABLE "author" (id SERIAL PRIMARY KEY)')
+        await conn.execute(
+            'CREATE TABLE "book" ('
+            "id SERIAL PRIMARY KEY, "
+            'author_id INTEGER NOT NULL REFERENCES "author"(id))',
+        )
+
+        stmts = schema_editor.sql_alter_field(
+            db_table="book",
+            field_name="author",
+            old_options={"type": "ForeignKeyFieldInstance", "null": False},
+            new_options={"type": "ForeignKeyFieldInstance", "null": True},
+        )
+        assert any('ALTER COLUMN "author_id"' in stmt for stmt in stmts)
+
+        op = AlterField(
+            model_name="Book",
+            db_table="book",
+            field_name="author",
+            old_options={"type": "ForeignKeyFieldInstance", "null": False},
+            new_options={"type": "ForeignKeyFieldInstance", "null": True},
+        )
+        await op.apply(conn, schema_editor)
+
+        is_nullable = await conn.fetchval(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name='book' AND column_name='author_id'",
+        )
+        assert is_nullable == "YES"
+    finally:
+        await conn.close()
+
+
 async def test_alter_field_accepts_enum_default(schema_editor):
     """Enum defaults should be coerced to their underlying value for SQL."""
 
@@ -183,6 +222,58 @@ async def test_alter_field_accepts_enum_default(schema_editor):
         assert "sent" in (default_sql or "")
     finally:
         await conn.close()
+
+
+def test_alter_field_fk_respects_db_column_override():
+    """db_column should win over FK default <name>_id resolution."""
+    ed = PostgresSchemaEditor()
+    stmts = ed.sql_alter_field(
+        db_table="commerces_orders",
+        field_name="person",
+        old_options={
+            "type": "ForeignKeyFieldInstance",
+            "null": False,
+            "db_column": "person_ref",
+        },
+        new_options={
+            "type": "ForeignKeyFieldInstance",
+            "null": True,
+            "db_column": "person_ref",
+        },
+    )
+    assert any('ALTER COLUMN "person_ref"' in stmt for stmt in stmts)
+
+
+def test_sql_add_remove_rename_field_use_fk_column_names():
+    """FK add/remove/rename should resolve to <name>_id by default."""
+    ed = PostgresSchemaEditor()
+    sql = ed.sql_add_field(
+        db_table="commerces_orders",
+        field_name="person",
+        field_type="ForeignKeyFieldInstance",
+        options={
+            "related_table": "people",
+            "to_field": "id",
+            "referenced_type": "IntField",
+        },
+    )
+    assert 'ADD COLUMN "person_id"' in sql
+
+    sql = ed.sql_remove_field(
+        db_table="commerces_orders",
+        field_name="person",
+        db_column="person_id",
+    )
+    assert 'DROP COLUMN IF EXISTS "person_id"' in sql
+
+    sql = ed.sql_rename_field(
+        db_table="commerces_orders",
+        old_name="person",
+        new_name="buyer",
+        old_db_column="person_id",
+        new_db_column="buyer_id",
+    )
+    assert 'RENAME COLUMN "person_id" TO "buyer_id"' in sql
 
 
 def test_db_default_expr_is_unquoted_python_callable_is_not_emitted():

@@ -102,11 +102,12 @@ def write_migration(
     (migrations_dir / "__init__.py").touch(exist_ok=True)
 
     number = _next_number(migrations_dir)
-    filename = (
-        f"{number:04d}_{_slugify(name)}.py"
-        if name
-        else _auto_name(operations=operations, number=number)
-    )
+    if name:
+        filename = f"{number:04d}_{_slugify(name)}.py"
+    elif empty and not operations and number > 1:
+        filename = f"{number:04d}_data_migration.py"
+    else:
+        filename = _auto_name(operations=operations, number=number)
     path = migrations_dir / filename
 
     # Build import list dynamically from operations
@@ -128,20 +129,23 @@ def write_migration(
 
     # Build operations block
     if include_runpython_stub:
-        ops_block = (
-            "operations: ClassVar[list] = [\n"
-            "# Fill in the functions below, then uncomment:\n"
-            "# RunPython(forwards, reverse_func=backwards),\n"
-            "]\n\n"
-            "async def forwards():\n"
+        func_block = (
+            "async def forwards(conn, schema_editor):\n"
             '\t"""Write forward data migration using the ORM."""\n'
             "\t...\n\n"
-            "async def backwards():\n"
+            "async def backwards(conn, schema_editor):\n"
             '\t"""Write reverse data migration if possible. Optional."""\n'
-            "\t...\n"
+            "\t...\n\n"
+        )
+        ops_block = (
+            "operations: ClassVar[list] = [\n"
+            "# Fill in the functions above, then uncomment:\n"
+            "# RunPython(forwards, reverse_func=backwards),\n"
+            "]\n"
         )
 
     else:
+        func_block = ""
         lines = [f"        {op.to_code()}," for op in operations]
         ops_block = (
             "operations: ClassVar[list] = [\n"
@@ -162,7 +166,7 @@ def write_migration(
         f"\t{ops_block}",
     )
 
-    code = f"{header_doc}\n{import_block}\n{migration_block}"
+    code = f"{header_doc}\n{import_block}\n{func_block}\n{migration_block}"
     code = black.format_str(code, mode=black.Mode())
     path.write_text(code, encoding="utf-8")
     click.echo(f"✅ Created migration {filename}")

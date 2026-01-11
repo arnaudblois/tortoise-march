@@ -49,6 +49,8 @@ def test_empty_migration_runpython_stub_is_valid(tmp_path: Path):
     path = Path(write_migration([], tmp_path, empty=True))
     content = path.read_text(encoding="utf-8")
 
+    assert path.name.startswith("0001_initial")
+
     # Import present
     assert "from tortoisemarch.operations import RunPython" in content
 
@@ -56,8 +58,17 @@ def test_empty_migration_runpython_stub_is_valid(tmp_path: Path):
     assert "RunPython(forwards, reverse_func=backwards)" in content
 
     # Stub functions are present
-    assert "async def forwards():" in content
-    assert "async def backwards():" in content
+    assert "async def forwards(" in content
+    assert "async def backwards(" in content
+
+
+def test_empty_migration_after_initial_is_data_migration(tmp_path: Path):
+    """Empty migrations after the first should default to data_migration."""
+    (tmp_path / "__init__.py").touch()
+    (tmp_path / "0001_initial.py").write_text("# initial\n", encoding="utf-8")
+
+    path = Path(write_migration([], tmp_path, empty=True))
+    assert path.name.startswith("0002_data_migration")
 
 
 def test_auto_name_includes_rename_model(tmp_path: Path):

@@ -5,6 +5,7 @@ table, add/alter/rename a column). The concrete execution and SQL rendering
 are delegated to the active `SchemaEditor` (e.g., Postgres).
 """
 
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -274,7 +275,11 @@ class AddField(Operation):
 
     async def unapply(self, conn, schema_editor) -> None:
         """Drop the column that was added."""
-        await schema_editor.remove_field(conn, self.db_table, self.field_name)
+        await schema_editor.remove_field(
+            conn,
+            self.db_table,
+            self.field_name,
+        )
 
     async def to_sql(self, conn, schema_editor) -> list[str]:
         """Return SQL to add the column."""
@@ -319,10 +324,16 @@ class RemoveField(Operation):
     model_name: str
     db_table: str
     field_name: str
+    db_column: str | None = None
 
     async def apply(self, conn, schema_editor) -> None:
         """Drop the column from the table."""
-        await schema_editor.remove_field(conn, self.db_table, self.field_name)
+        await schema_editor.remove_field(
+            conn,
+            self.db_table,
+            self.field_name,
+            db_column=self.db_column,
+        )
 
     async def unapply(self, conn, schema_editor) -> None:
         """Raise an exception as this is irreversible."""
@@ -333,7 +344,13 @@ class RemoveField(Operation):
     async def to_sql(self, conn, schema_editor) -> list[str]:
         """Return SQL to drop the column."""
         _ = conn
-        return [schema_editor.sql_remove_field(self.db_table, self.field_name)]
+        return [
+            schema_editor.sql_remove_field(
+                self.db_table,
+                self.field_name,
+                db_column=self.db_column,
+            ),
+        ]
 
     def mutate_state(self, state: ProjectState) -> None:
         """Remove the field from the in-memory state."""
@@ -342,11 +359,15 @@ class RemoveField(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
-        return (
+        base = (
             f"RemoveField(model_name={self.model_name!r}, "
             f"db_table={self.db_table!r}, "
-            f"field_name={self.field_name!r})"
+            f"field_name={self.field_name!r}"
         )
+        if self.db_column is not None:
+            base += f", db_column={self.db_column!r}"
+        base += ")"
+        return base
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +493,8 @@ class RenameField(Operation):
     db_table: str
     old_name: str
     new_name: str
+    old_db_column: str | None = None
+    new_db_column: str | None = None
 
     async def apply(self, conn, schema_editor) -> None:
         """Rename the column on the table."""
@@ -480,6 +503,8 @@ class RenameField(Operation):
             self.db_table,
             self.old_name,
             self.new_name,
+            old_db_column=self.old_db_column,
+            new_db_column=self.new_db_column,
         )
 
     async def unapply(self, conn, schema_editor) -> None:
@@ -489,6 +514,8 @@ class RenameField(Operation):
             self.db_table,
             self.new_name,
             self.old_name,
+            old_db_column=self.new_db_column,
+            new_db_column=self.old_db_column,
         )
 
     async def to_sql(self, conn, schema_editor) -> list[str]:
@@ -499,6 +526,8 @@ class RenameField(Operation):
                 self.db_table,
                 self.old_name,
                 self.new_name,
+                old_db_column=self.old_db_column,
+                new_db_column=self.new_db_column,
             ),
         ]
 
@@ -516,11 +545,17 @@ class RenameField(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
-        return (
+        base = (
             f"RenameField(model_name={self.model_name!r}, "
             f"db_table={self.db_table!r}, old_name={self.old_name!r}, "
-            f"new_name={self.new_name!r})"
+            f"new_name={self.new_name!r}"
         )
+        if self.old_db_column is not None:
+            base += f", old_db_column={self.old_db_column!r}"
+        if self.new_db_column is not None:
+            base += f", new_db_column={self.new_db_column!r}"
+        base += ")"
+        return base
 
 
 @dataclass
@@ -666,12 +701,41 @@ class RunPython(Operation):
     func: Callable[[Any, Any], Awaitable[None] | None]
     reverse_func: Callable[[Any, Any], Awaitable[None] | None] | None = None
 
+    @staticmethod
+    def _invoke_runpython_callable(
+        func: Callable,
+        conn: Any,
+        schema_editor: Any,
+    ) -> Any:
+        """Invoke a RunPython callable with 0 args or (conn, schema_editor)."""
+        try:
+            sig = inspect.signature(func)
+        except (TypeError, ValueError):
+            return func(conn, schema_editor)
+
+        params = list(sig.parameters.values())
+        if any(p.kind == p.VAR_POSITIONAL for p in params):
+            return func(conn, schema_editor)
+
+        positional = [
+            p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+        if not positional:
+            return func()
+        if len(positional) >= 2:  # noqa: PLR2004
+            return func(conn, schema_editor)
+
+        msg = (
+            "RunPython callable must accept 0 or 2 positional arguments "
+            "(conn, schema_editor)."
+        )
+        raise TypeError(msg)
+
     async def apply(self, conn, schema_editor) -> None:
         """Run the forwards callable (sync or async)."""
-        result = self.func(conn, schema_editor)
-        if hasattr(result, "__await__"):
-            await result  # async forwards()
-        # if sync, it already ran
+        result = self._invoke_runpython_callable(self.func, conn, schema_editor)
+        if inspect.isawaitable(result):
+            await result
 
     async def unapply(self, conn, schema_editor) -> None:
         """Run the reverse callable if provided, else refuse to reverse."""
@@ -679,8 +743,12 @@ class RunPython(Operation):
             msg = "RunPython operation has no reverse callable"
             raise RuntimeError(msg)
 
-        result = self.reverse_func(conn, schema_editor)
-        if hasattr(result, "__await__"):
+        result = self._invoke_runpython_callable(
+            self.reverse_func,
+            conn,
+            schema_editor,
+        )
+        if inspect.isawaitable(result):
             await result
 
     def mutate_state(self, state: ProjectState) -> None:
