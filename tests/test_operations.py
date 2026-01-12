@@ -230,6 +230,32 @@ def test_alter_field_to_code_serializes_enum_default():
     assert "'draft'" in code  # value rendered as literal
 
 
+def test_alter_field_mutate_state_preserves_existing_options():
+    """AlterField should not drop unchanged options in mutate_state."""
+    max_length = 12
+    field_opts = {"primary_key": True, "max_length": max_length, "null": False}
+    state = ProjectState(
+        model_states={
+            "Book": model("Book", [("id", "CharField", field_opts)], db_table="book"),
+        },
+    )
+
+    op = AlterField(
+        model_name="Book",
+        db_table="book",
+        field_name="id",
+        old_options={"type": "CharField"},
+        new_options={"type": "CharField", "default": "python_callable"},
+    )
+    op.mutate_state(state)
+
+    fs = state.model_states["Book"].field_states["id"]
+    assert fs.primary_key is True
+    assert fs.max_length == max_length
+    assert fs.null is False
+    assert fs.default == "python_callable"
+
+
 def test_add_field_fk_metadata_preserved_in_state():
     """Ensure FK-related options make it into FieldState.options."""
     state = ProjectState(

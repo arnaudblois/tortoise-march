@@ -436,13 +436,23 @@ class AlterField(Operation):
             or "TextField"
         )
 
-        # Strip internal 'type' key from options when building FieldState.
-        clean_new_opts = {k: v for k, v in self.new_options.items() if k != "type"}
+        # Merge new options into the prior state so partial AlterField payloads
+        # don't erase previously-known attributes; otherwise we lose flags like
+        # primary_key/max_length and makemigrations keeps re-emitting changes.
+        base_opts = (
+            dict(prev.options)
+            if prev
+            else {k: v for k, v in self.old_options.items() if k != "type"}
+        )
+        for key, value in self.new_options.items():
+            if key == "type":
+                continue
+            base_opts[key] = value
 
         new_fs = FieldState(
             name=dst_name,
             field_type=new_type,
-            **clean_new_opts,
+            **base_opts,
         )
 
         if self.new_name and src_key in model.field_states:
