@@ -258,6 +258,23 @@ def test_meta_indexes_emit_create_and_remove_index():
     assert set(creates[0].columns) == {"status", "role"}
 
 
+def test_meta_indexes_skip_field_index_duplicates():
+    """Meta indexes duplicating field db_index should not emit CreateIndex.
+
+    The index creation is already contained in field section of the related
+    Operation, as a `index: True`.
+    """
+    ms = model(
+        "DocumentFileVersion",
+        [("sha256", "CharField", {"index": True, "max_length": 64})],
+        meta={"indexes": [(("sha256",), False)]},
+    )
+
+    ops = diff_states(project({}), project({"DocumentFileVersion": ms}))
+    assert any(isinstance(op, CreateModel) for op in ops)
+    assert not any(isinstance(op, CreateIndex) for op in ops)
+
+
 def test_meta_indexes_use_physical_fk_columns():
     """Index SQL should use DB column names for FK/OneToOne fields."""
     ms = model(

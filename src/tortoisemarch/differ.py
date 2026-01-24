@@ -167,13 +167,24 @@ def _model_rename_score(old_ms: ModelState, new_ms: ModelState) -> float:
     return min(score, 1.0)
 
 
+def _implicit_field_indexes(ms: ModelState) -> set[tuple[tuple[str, ...], bool]]:
+    """Return indexes implicitly created by field-level index flags."""
+    implicit: set[tuple[tuple[str, ...], bool]] = set()
+    for fs in ms.field_states.values():
+        opts = fs.options
+        if opts.get("index") and not opts.get("unique") and not opts.get("primary_key"):
+            cols = _physical_index_columns(ms, (fs.name,))
+            implicit.add((cols, False))
+    return implicit
+
+
 def _model_indexes(ms: ModelState) -> set[tuple[tuple[str, ...], bool]]:
     """Return a canonical set of (columns, unique) index definitions."""
     meta = ms.meta or {}
     indexes = set()
     for cols, unique in meta.get("indexes", []):
         indexes.add((_physical_index_columns(ms, tuple(cols)), bool(unique)))
-    return indexes
+    return indexes - _implicit_field_indexes(ms)
 
 
 def _physical_index_columns(ms: ModelState, cols: tuple[str, ...]) -> tuple[str, ...]:
