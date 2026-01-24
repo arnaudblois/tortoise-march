@@ -29,7 +29,7 @@ from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.extractor import extract_project_state
 from tortoisemarch.loader import load_migration_state
 from tortoisemarch.model_state import ProjectState
-from tortoisemarch.operations import AddField, AlterField, CreateModel
+from tortoisemarch.operations import AddField, AlterField, CreateModel, RenameModel
 from tortoisemarch.writer import write_migration
 
 # Matches files like "0001_initial.py" and captures the number as group(1)
@@ -116,6 +116,91 @@ def _validate_non_nullable_adds_and_warn_alters(  # noqa: C901, PLR0912
                 "then re-run makemigrations."
             )
             raise InvalidMigrationError(msg)
+
+
+def _normalize_alter_options(opts: dict[str, Any]) -> dict[str, Any]:
+    """Normalize AlterField options for diffing."""
+    normalized = dict(opts)
+    if "type" not in normalized and "field_type" in normalized:
+        normalized["type"] = normalized["field_type"]
+    normalized.pop("field_type", None)
+    return normalized
+
+
+def _is_supported_type_change(
+    old_type: str | None,
+    new_type: str | None,
+) -> bool:
+    """Return True if a type change is explicitly supported."""
+    if not old_type or not new_type:
+        return False
+    if old_type == new_type:
+        return True
+    int_rank = {"SmallIntField": 0, "IntField": 1, "BigIntField": 2}
+    if old_type in int_rank and new_type in int_rank:
+        return int_rank[new_type] > int_rank[old_type]
+    return old_type == "CharField" and new_type == "CharField"
+
+
+def _validate_safe_alters(operations: list[Any]) -> None:  # noqa: C901
+    """Reject AlterField ops that change unsupported schema attributes."""
+    related_table_renames: set[tuple[str | None, str | None]] = set()
+    for op in operations:
+        if isinstance(op, RenameModel):
+            related_table_renames.add((op.old_db_table, op.new_db_table))
+
+    problems: list[str] = []
+    for op in operations:
+        if not isinstance(op, AlterField):
+            continue
+
+        old_opts = _normalize_alter_options(op.old_options)
+        new_opts = _normalize_alter_options(op.new_options)
+
+        diffs = {
+            key
+            for key in set(old_opts) | set(new_opts)
+            if old_opts.get(key) != new_opts.get(key)
+        }
+
+        if not diffs:
+            continue
+
+        # Allowed no-op metadata changes.
+        diffs -= {"auto_now", "auto_now_add", "related_model"}
+
+        old_type = old_opts.get("type")
+        new_type = new_opts.get("type")
+
+        if "type" in diffs and _is_supported_type_change(old_type, new_type):
+            diffs.remove("type")
+
+        if "max_length" in diffs and old_type == new_type == "CharField":
+            diffs.remove("max_length")
+
+        if "related_table" in diffs:
+            pair = (old_opts.get("related_table"), new_opts.get("related_table"))
+            if pair in related_table_renames:
+                diffs.remove("related_table")
+
+        if "db_column" in diffs and op.new_name:
+            diffs.remove("db_column")
+
+        # Allowed schema changes handled by SchemaEditor.
+        diffs -= {"null", "default", "index"}
+
+        if diffs:
+            keys = ", ".join(sorted(diffs))
+            problems.append(f"{op.model_name}.{op.field_name} ({keys})")
+
+    if problems:
+        msg = (
+            "Cannot generate migration:\n"
+            "Unsupported AlterField changes detected. Use a custom "
+            "RunSQL/RunPython migration for these changes.\n\n"
+            "Problems:\n  - " + "\n  - ".join(problems)
+        )
+        raise InvalidMigrationError(msg)
 
 
 def _input_int(prompt: str, default: int = 0, max_value: int | None = None) -> int:
@@ -418,6 +503,7 @@ async def makemigrations(
     rename_map = _choose_renames_interactive(old_state, new_state)
     operations = diff_states(old_state, new_state, rename_map=rename_map or {})
     _validate_non_nullable_adds_and_warn_alters(operations)
+    _validate_safe_alters(operations)
 
     # 5) Write or noop
     if operations:

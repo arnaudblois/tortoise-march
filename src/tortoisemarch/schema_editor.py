@@ -441,6 +441,21 @@ class PostgresSchemaEditor(SchemaEditor):
         new_type = new.get("type")
 
         # If type is missing on either side, we can't safely infer this path here.
+        if old_type is None or new_type is None:
+            return []
+
+        # Safe integer widening (SMALLINT -> INT -> BIGINT).
+        int_rank = {"SmallIntField": 0, "IntField": 1, "BigIntField": 2}
+        if old_type in int_rank and new_type in int_rank:
+            if int_rank[new_type] > int_rank[old_type]:
+                new_sql_type = self.sql_for_field(new_type, new)
+                stmts.append(
+                    f"ALTER TABLE {self._q_ident(db_table.lower())} "
+                    f"ALTER COLUMN {self._q_ident(column_name)} "
+                    f"TYPE {new_sql_type};",
+                )
+            return stmts
+
         if old_type != "CharField" or new_type != "CharField":
             return []
 
@@ -471,9 +486,9 @@ class PostgresSchemaEditor(SchemaEditor):
     ) -> list[str]:
         """Return the sql to alter the field in Postgres."""
         statements: list[str] = []
-        field_type = self._field_type_from_options(
-            new_options,
-        ) or self._field_type_from_options(old_options)
+        old_type = self._field_type_from_options(old_options)
+        new_type = self._field_type_from_options(new_options)
+        field_type = new_type or old_type
         column_opts: dict[str, Any] = {}
         db_column = new_options.get("db_column") or old_options.get("db_column")
         if db_column is not None:
@@ -485,12 +500,13 @@ class PostgresSchemaEditor(SchemaEditor):
         )
 
         # Type changes (limited safe cases)
-        statements += self._sql_alter_type_if_supported(
+        type_stmts = self._sql_alter_type_if_supported(
             db_table=db_table,
             column_name=column_name,
             old=old_options,
             new=new_options,
         )
+        statements += type_stmts
 
         # NULL / NOT NULL
         if old_options.get("null", False) != new_options.get("null", False):

@@ -474,3 +474,24 @@ def test_sql_alter_field_handles_index_changes():
         new_options={"type": "IntField", "index": False},
     )
     assert any("DROP INDEX" in s for s in stmts)
+
+
+def test_sql_alter_field_supports_integer_widening():
+    """Integer widening should emit a TYPE change statement."""
+    ed = PostgresSchemaEditor()
+
+    stmts = ed.sql_alter_field(
+        db_table="audit_log",
+        field_name="id",
+        old_options={"type": "IntField"},
+        new_options={"type": "BigIntField"},
+    )
+    assert any("TYPE BIGINT" in s for s in stmts)
+
+    stmts = ed.sql_alter_field(
+        db_table="audit_log",
+        field_name="id",
+        old_options={"type": "SmallIntField"},
+        new_options={"type": "IntField"},
+    )
+    assert any("TYPE INTEGER" in s for s in stmts)

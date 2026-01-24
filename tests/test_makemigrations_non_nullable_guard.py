@@ -3,8 +3,11 @@
 import pytest
 
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.makemigrations import _validate_non_nullable_adds_and_warn_alters
-from tortoisemarch.operations import AddField, AlterField, CreateModel
+from tortoisemarch.makemigrations import (
+    _validate_non_nullable_adds_and_warn_alters,
+    _validate_safe_alters,
+)
+from tortoisemarch.operations import AddField, AlterField, CreateModel, RenameModel
 
 
 def test_add_non_nullable_no_default_on_existing_table_raises():
@@ -151,3 +154,104 @@ def test_default_callable_is_not_accepted_and_should_raise():
     )
     with pytest.raises(InvalidMigrationError):
         _validate_non_nullable_adds_and_warn_alters([op])
+
+
+def test_alter_field_unsupported_type_change_raises():
+    """Unsupported type changes should be rejected during makemigrations."""
+    op = AlterField(
+        model_name="AuditLog",
+        db_table="audit_log",
+        field_name="id",
+        old_options={"type": "IntField"},
+        new_options={"type": "UUIDField", "default": "python_callable"},
+    )
+    with pytest.raises(InvalidMigrationError, match="Unsupported AlterField changes"):
+        _validate_safe_alters([op])
+
+
+def test_alter_field_fk_reference_change_raises():
+    """Changing FK references should be rejected during makemigrations."""
+    op = AlterField(
+        model_name="Book",
+        db_table="book",
+        field_name="author",
+        old_options={
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "authors",
+            "to_field": "id",
+            "referenced_type": "UUIDField",
+        },
+        new_options={
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "writers",
+            "to_field": "id",
+            "referenced_type": "UUIDField",
+        },
+    )
+    with pytest.raises(InvalidMigrationError, match="Unsupported AlterField changes"):
+        _validate_safe_alters([op])
+
+
+def test_alter_field_fk_reference_change_allowed_for_model_rename():
+    """FK related_table updates tied to a model/table rename should be allowed."""
+    rename = RenameModel(
+        old_name="Author",
+        new_name="Writer",
+        old_db_table="author",
+        new_db_table="writer",
+    )
+    op = AlterField(
+        model_name="Book",
+        db_table="book",
+        field_name="author",
+        old_options={
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "author",
+            "to_field": "id",
+            "referenced_type": "UUIDField",
+        },
+        new_options={
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "writer",
+            "to_field": "id",
+            "referenced_type": "UUIDField",
+        },
+    )
+    _validate_safe_alters([rename, op])  # should not raise
+
+
+def test_alter_field_allows_integer_widening():
+    """Safe integer widening should be allowed during makemigrations."""
+    op = AlterField(
+        model_name="AuditLog",
+        db_table="audit_log",
+        field_name="id",
+        old_options={"type": "IntField"},
+        new_options={"type": "BigIntField"},
+    )
+    _validate_safe_alters([op])  # should not raise
+
+
+def test_alter_field_allows_charfield_length_change():
+    """CharField length changes should be allowed during makemigrations."""
+    op = AlterField(
+        model_name="User",
+        db_table="user",
+        field_name="email",
+        old_options={"type": "CharField", "max_length": 120},
+        new_options={"type": "CharField", "max_length": 200},
+    )
+    _validate_safe_alters([op])  # should not raise
+
+
+def test_alter_field_allows_db_column_change_with_rename():
+    """db_column changes paired with a rename should be allowed."""
+    op = AlterField(
+        model_name="Book",
+        db_table="book",
+        field_name="author",
+        old_options={"type": "ForeignKeyFieldInstance", "db_column": "author_id"},
+        new_options={"type": "ForeignKeyFieldInstance", "db_column": "writer_id"},
+        new_name="writer",
+    )
+    _validate_safe_alters([op])  # should not raise
