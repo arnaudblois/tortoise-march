@@ -16,12 +16,36 @@ from tortoisemarch.exceptions import InvalidMigrationError
 
 
 def _auto_name(operations: list, number: int) -> str:  # noqa: C901, PLR0912
-    """Generate a default name based on the operations, like Django does."""
+    """Generate a default name based on the operations, like Django does.
+
+    Operations are sorted by importance so model-level changes take precedence.
+    """
     if number == 1:
         return "0001_initial.py"
 
+    priority = {
+        "CreateModel": 0,
+        "RemoveModel": 0,
+        "RenameModel": 0,
+        "AddField": 1,
+        "RemoveField": 1,
+        "AlterField": 1,
+        "RenameField": 1,
+        "RunPython": 1,
+        "CreateIndex": 2,
+        "RemoveIndex": 2,
+    }
+    ranked_ops = sorted(
+        enumerate(operations),
+        key=lambda item: (
+            priority.get(item[1].__class__.__name__, 9),
+            item[0],
+        ),
+    )
+    chosen = [op for _, op in ranked_ops[:2]]
+
     parts: list[str] = []
-    for op in operations[:2]:  # only first few, keep short
+    for op in chosen:  # only first few, keep short
         cname = op.__class__.__name__
         if cname == "CreateModel":
             parts.append(f"create_{op.name.lower()}")

@@ -4,7 +4,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from tortoisemarch.model_state import FieldState, ModelState
-from tortoisemarch.operations import CreateModel, RenameModel
+from tortoisemarch.operations import CreateIndex, CreateModel, RenameModel
 from tortoisemarch.writer import write_migration
 
 
@@ -90,6 +90,56 @@ def test_auto_name_includes_rename_model(tmp_path: Path):
     fname = Path(out_path).name
 
     assert fname.startswith("0002_rename_companyuser_to_companymember")
+
+
+def test_auto_name_prioritizes_models_over_indexes(tmp_path: Path):
+    """CreateModel operations should win over CreateIndex in auto names."""
+    (tmp_path / "__init__.py").touch()
+    (tmp_path / "0001_initial.py").write_text("# initial\n", encoding="utf-8")
+
+    ops = [
+        CreateIndex(
+            model_name="Book",
+            db_table="book",
+            columns=("author_id", "title"),
+            name="book_author_id_title_idx",
+        ),
+        CreateModel(
+            name="Book",
+            db_table="book",
+            fields=[
+                (
+                    "id",
+                    "UUIDField",
+                    {"primary_key": True, "default": "python_callable"},
+                ),
+            ],
+        ),
+        CreateIndex(
+            model_name="Book",
+            db_table="book",
+            columns=("author_id", "title"),
+            unique=True,
+            name="book_author_id_title_uniq",
+        ),
+        CreateModel(
+            name="Author",
+            db_table="author",
+            fields=[
+                (
+                    "id",
+                    "UUIDField",
+                    {"primary_key": True, "default": "python_callable"},
+                ),
+            ],
+        ),
+    ]
+
+    out_path = write_migration(ops, migrations_dir=tmp_path)
+    fname = Path(out_path).name
+
+    assert fname.startswith("0002_create_book_create_author")
+    assert fname.endswith("_and_more.py")
 
 
 def test_compaction_removes_redundant_pk_flags(tmp_path: Path):
