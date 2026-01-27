@@ -25,7 +25,7 @@ from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.operations import default_index_name
 from tortoisemarch.schema_filtering import FK_TYPES, NON_SCHEMA_FIELD_TYPES
 
-PY_CALLABLE_SENTINELS = {"python_callable", "callable_handled_by_python"}
+PY_CALLABLE_SENTINELS = {"python_callable"}
 
 
 class SchemaEditor(ABC):

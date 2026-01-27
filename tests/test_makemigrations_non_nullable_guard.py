@@ -26,6 +26,8 @@ def test_add_non_nullable_no_default_on_existing_table_raises():
         "Cannot generate migration:\n"
         "You added a non-nullable field without a default "
         "(cannot backfill existing rows).\n"
+        "Note: Python defaults (e.g. timezone.now) are not database defaults "
+        "and cannot backfill existing rows automatically.\n"
         "Fix by adding a default or use this safe sequence:\n"
         "  1) Add the field as nullable.\n"
         "  2) Create a data migration to backfill it "

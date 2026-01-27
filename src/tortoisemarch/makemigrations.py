@@ -30,6 +30,7 @@ from tortoisemarch.extractor import extract_project_state
 from tortoisemarch.loader import load_migration_state
 from tortoisemarch.model_state import ProjectState
 from tortoisemarch.operations import AddField, AlterField, CreateModel, RenameModel
+from tortoisemarch.schema_filtering import FK_TYPES
 from tortoisemarch.writer import write_migration
 
 # Matches files like "0001_initial.py" and captures the number as group(1)
@@ -48,6 +49,42 @@ def _has_db_initialisable_default(opts: dict[str, Any]) -> bool:
         return False
     default = opts["default"]
     return default not in (None, "python_callable")
+
+
+def _validate_index_columns(state: ProjectState) -> None:
+    """Ensure Meta.indexes/unique_together refer to real fields/columns."""
+    problems: list[str] = []
+    for ms in state.model_states.values():
+        meta = ms.meta or {}
+        indexes = meta.get("indexes")
+        if not indexes:
+            continue
+
+        logical_names = {fs.name.lower() for fs in ms.field_states.values()}
+        physical_names: set[str] = set()
+        for fs in ms.field_states.values():
+            db_column = fs.options.get("db_column")
+            if db_column:
+                physical_names.add(str(db_column).lower())
+            else:
+                physical_names.add(fs.name.lower())
+            if fs.field_type in FK_TYPES or fs.field_type == "OneToOneFieldInstance":
+                physical_names.add(f"{fs.name.lower()}_id")
+
+        for cols, _unique in indexes:
+            for col in cols:
+                cname = str(col).lower()
+                if cname not in logical_names and cname not in physical_names:
+                    problems.append(f"{ms.name}.{col}")
+
+    if problems:
+        msg = (
+            "Invalid index definitions detected (unknown fields/columns):\n"
+            "  - " + "\n  - ".join(problems) + "\n\n"
+            "Fix Meta.indexes / unique_together to reference existing fields "
+            "or explicit db_column names."
+        )
+        raise InvalidMigrationError(msg)
 
 
 def _validate_non_nullable_adds_and_warn_alters(  # noqa: C901, PLR0912
@@ -92,6 +129,8 @@ def _validate_non_nullable_adds_and_warn_alters(  # noqa: C901, PLR0912
             "Cannot generate migration:\n"
             "You added a non-nullable field without a default "
             "(cannot backfill existing rows).\n"
+            "Note: Python defaults (e.g. timezone.now) are not database defaults "
+            "and cannot backfill existing rows automatically.\n"
             "Fix by adding a default or use this safe sequence:\n"
             "  1) Add the field as nullable.\n"
             "  2) Create a data migration to backfill it "
@@ -104,6 +143,7 @@ def _validate_non_nullable_adds_and_warn_alters(  # noqa: C901, PLR0912
     if risky_alters:
         click.echo(
             "⚠️  About to make fields NOT NULL without a default.\n"
+            "Note: Python defaults (e.g. timezone.now) are not database defaults.\n"
             "This is allowed only if you backfill NULL values first "
             "(typically via a data migration / RunPython).\n\n"
             "Affected fields:\n  - " + "\n  - ".join(risky_alters),
@@ -500,6 +540,7 @@ async def makemigrations(
         app_labels=set(Tortoise.apps.keys()),
         module_prefixes=module_prefixes,
     )
+    _validate_index_columns(new_state)
     rename_map = _choose_renames_interactive(old_state, new_state)
     operations = diff_states(old_state, new_state, rename_map=rename_map or {})
     _validate_non_nullable_adds_and_warn_alters(operations)
