@@ -31,7 +31,7 @@ from tortoisemarch.loader import load_migration_state
 from tortoisemarch.model_state import ProjectState
 from tortoisemarch.operations import AddField, AlterField, CreateModel, RenameModel
 from tortoisemarch.schema_filtering import FK_TYPES
-from tortoisemarch.writer import write_migration
+from tortoisemarch.writer import preview_migration_filename, write_migration
 
 # Matches files like "0001_initial.py" and captures the number as group(1)
 _MIGRATION_RE = re.compile(r"^(\d{4})_.*\.py$")
@@ -463,12 +463,125 @@ def _validate_related_models(
                 raise InvalidMigrationError(msg)
 
 
+def _prepare_migrations_dir(location: Path | str) -> Path:
+    location = Path(location)
+    location.mkdir(parents=True, exist_ok=True)
+    init_file = location / "__init__.py"
+    init_file.touch(exist_ok=True)
+    if init_file.stat().st_size == 0:
+        init_file.write_text(
+            '"""Directory for TortoiseMarch migrations."""\n',
+            encoding="utf-8",
+        )
+    return location
+
+
+async def _init_tortoise_apps(tortoise_conf: dict[str, Any]) -> None:
+    try:
+        await Tortoise.init(config=tortoise_conf)
+    except ConfigurationError as exc:
+        await Tortoise._reset_apps()  # noqa: SLF001
+        msg = f"Tortoise could not initialise apps due to configuration errors. {exc}"
+        raise InvalidMigrationError(msg) from exc
+
+
+def _precheck_conflicts(migrations_dir: Path) -> None:
+    pre_conflicts = _detect_conflicts(migrations_dir=migrations_dir)
+    if not pre_conflicts:
+        return
+    lines = [f"  {num:04d}: {', '.join(names)}" for num, names in pre_conflicts]
+    msg = "Conflicting migration numbers detected:\n" + "\n".join(lines)
+    raise InvalidMigrationError(msg)
+
+
+def _handle_empty_migration(
+    *,
+    empty: bool,
+    check_only: bool,
+    migrations_dir: Path,
+    name: str | None,
+) -> bool:
+    if not empty:
+        return False
+    if check_only:
+        filename = preview_migration_filename(
+            [],
+            migrations_dir=migrations_dir,
+            name=name,
+            empty=True,
+        )
+        msg = (
+            "makemigrations --check-only: migration would be created.\n"
+            f"  - {filename}"
+        )
+        raise InvalidMigrationError(msg)
+    click.echo("✍️  Creating empty migration...")
+    write_migration([], migrations_dir=migrations_dir, name=name, empty=True)
+    return True
+
+
+def _collect_module_prefixes(apps: dict[str, Any]) -> set[str]:
+    module_prefixes: set[str] = set()
+    for models in apps.values():
+        for cls in models.values():
+            mod = getattr(cls, "__module__", "")
+            if mod:
+                module_prefixes.add(mod.split(".", 1)[0])
+    return module_prefixes
+
+
+def _build_operations(
+    old_state: ProjectState,
+    new_state: ProjectState,
+    *,
+    apps: dict[str, Any],
+) -> list[Any]:
+    module_prefixes = _collect_module_prefixes(apps)
+    _validate_related_models(
+        new_state,
+        app_labels=set(apps.keys()),
+        module_prefixes=module_prefixes,
+    )
+    _validate_index_columns(new_state)
+    rename_map = _choose_renames_interactive(old_state, new_state)
+    operations = diff_states(old_state, new_state, rename_map=rename_map or {})
+    _validate_non_nullable_adds_and_warn_alters(operations)
+    _validate_safe_alters(operations)
+    return operations
+
+
+def _write_or_check_operations(
+    operations: list[Any],
+    *,
+    check_only: bool,
+    migrations_dir: Path,
+    name: str | None,
+) -> None:
+    if not operations:
+        click.echo("✅ No changes detected.")
+        return
+    if check_only:
+        filename = preview_migration_filename(
+            operations,
+            migrations_dir=migrations_dir,
+            name=name,
+        )
+        msg = (
+            "makemigrations --check-only: migrations would be created.\n"
+            f"  - {filename}"
+        )
+        raise InvalidMigrationError(msg)
+    click.echo(f"✍️  Writing migration with {len(operations)} operations...")
+    write_migration(operations, migrations_dir=migrations_dir, name=name)
+
+
 async def makemigrations(
     tortoise_conf: dict | None = None,
     location: Path | None = None,
     name: str | None = None,
     *,
     empty: bool = False,
+    check_only: bool = False,
 ) -> None:
     """Run the makemigrations workflow.
 
@@ -479,6 +592,7 @@ async def makemigrations(
             `pyproject.toml` (and created by the writer if needed).
         empty: If True, create an empty migration file with a RunPython stub.
         name: Optional suffix for the migration filename (slugified by writer).
+        check_only: If True, error out if a migration would be written.
 
     Raises:
         InvalidMigrationError: if conflicting migration numbers are found.
@@ -489,68 +603,36 @@ async def makemigrations(
         config = load_config()
         tortoise_conf = config["tortoise_orm"]
         location = config["location"] or Path("tortoisemarch/migrations")
-    location = Path(location)
-    location.mkdir(parents=True, exist_ok=True)
-    init_file = location / "__init__.py"
-    init_file.touch(exist_ok=True)
-
-    if init_file.stat().st_size == 0:
-        init_file.write_text(
-            '"""Directory for TortoiseMarch migrations."""\n',
-            encoding="utf-8",
-        )
-
+    location = _prepare_migrations_dir(location)
     tortoise_conf = _tortoise_conf_for_introspection(conf=tortoise_conf)
 
     # Init the Tortoise apps so extractor can see the models
+    await _init_tortoise_apps(tortoise_conf)
+
     try:
-        await Tortoise.init(config=tortoise_conf)
-    except ConfigurationError as exc:
-        await Tortoise._reset_apps()  # noqa: SLF001
-        msg = f"Tortoise could not initialise apps due to configuration errors. {exc}"
-        raise InvalidMigrationError(msg) from exc
+        # 2) Pre-check for conflicts
+        _precheck_conflicts(migrations_dir=location)
 
-    # 2) Pre-check for conflicts
-    pre_conflicts = _detect_conflicts(migrations_dir=location)
-    if pre_conflicts:
-        lines = [f"  {num:04d}: {', '.join(names)}" for num, names in pre_conflicts]
-        msg = "Conflicting migration numbers detected:\n" + "\n".join(lines)
+        # 3) Empty migration scaffold
+        if _handle_empty_migration(
+            empty=empty,
+            check_only=check_only,
+            migrations_dir=location,
+            name=name,
+        ):
+            return
+
+        # 4) Compute operations by diffing old vs new state
+        old_state = load_migration_state(migration_dir=location)
+        new_state = extract_project_state(apps=Tortoise.apps)
+        operations = _build_operations(old_state, new_state, apps=Tortoise.apps)
+
+        # 5) Write or noop
+        _write_or_check_operations(
+            operations,
+            check_only=check_only,
+            migrations_dir=location,
+            name=name,
+        )
+    finally:
         await Tortoise.close_connections()
-        raise InvalidMigrationError(msg)
-
-    # 3) Empty migration scaffold
-    if empty:
-        click.echo("✍️  Creating empty migration...")
-        write_migration([], migrations_dir=location, name=name, empty=True)
-        await Tortoise.close_connections()
-        return
-
-    # 4) Compute operations by diffing old vs new state
-    old_state = load_migration_state(migration_dir=location)
-    new_state = extract_project_state(apps=Tortoise.apps)
-    module_prefixes: set[str] = set()
-    for models in Tortoise.apps.values():
-        for cls in models.values():
-            mod = getattr(cls, "__module__", "")
-            if mod:
-                module_prefixes.add(mod.split(".", 1)[0])
-
-    _validate_related_models(
-        new_state,
-        app_labels=set(Tortoise.apps.keys()),
-        module_prefixes=module_prefixes,
-    )
-    _validate_index_columns(new_state)
-    rename_map = _choose_renames_interactive(old_state, new_state)
-    operations = diff_states(old_state, new_state, rename_map=rename_map or {})
-    _validate_non_nullable_adds_and_warn_alters(operations)
-    _validate_safe_alters(operations)
-
-    # 5) Write or noop
-    if operations:
-        click.echo(f"✍️  Writing migration with {len(operations)} operations...")
-        write_migration(operations, migrations_dir=location, name=name)
-    else:
-        click.echo("✅ No changes detected.")
-
-    await Tortoise.close_connections()

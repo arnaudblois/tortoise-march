@@ -62,6 +62,13 @@ poetry run tortoisemarch migrate
 
 New files will appear under `tortoisemarch/migrations/` with operations like `CreateModel`, `AddField`, `RenameField`, and friends.
 
+`makemigrations` options:
+
+- `--empty` creates a data-migration stub with a `RunPython` placeholder.
+- `--name` sets a custom filename suffix.
+- `--location` overrides the migrations directory.
+- `--check-only` errors out if a migration would be written and prints the filename (useful in CI).
+
 `migrate` options:
 
 - `tortoisemarch migrate 0002` migrates forward or backward to reach that target (number or unique prefix).

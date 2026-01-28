@@ -20,7 +20,7 @@ def newest_migration_text(migrations_dir) -> str:
     return files[-1].read_text()
 
 
-async def run_makemigrations(migrations_dir) -> None:
+async def run_makemigrations(migrations_dir, *, check_only: bool = False) -> None:
     """Ensure (re)import of models for Tortoise before calling makemigrations."""
     # Always reload models from disk to avoid stale class attributes after renames.
     if "models" in sys.modules:
@@ -34,7 +34,11 @@ async def run_makemigrations(migrations_dir) -> None:
         },
         "apps": {"models": {"models": ["models"], "default_connection": "default"}},
     }
-    await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
+    await makemigrations(
+        tortoise_conf=tortoise_orm,
+        location=migrations_dir,
+        check_only=check_only,
+    )
 
 
 async def run_makemigrations_with_modules(
@@ -530,3 +534,54 @@ async def test_makemigrations_emits_createindex_for_meta_indexes(
 
     # Ignore timestamp line for snapshot stability
     assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+
+
+@pytest.mark.asyncio
+async def test_makemigrations_check_only_errors(tmp_path: Path):
+    """Check-only should fail when changes would create a migration file."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").touch()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    def write_models(code: str) -> None:
+        (models_dir / "__init__.py").write_text(textwrap.dedent(code))
+        pycache = models_dir / "__pycache__"
+        if pycache.exists():
+            for f in pycache.glob("__init__.*.pyc"):
+                f.unlink()
+        if "models" in sys.modules:
+            del sys.modules["models"]
+
+    write_models(
+        """
+        from tortoise import fields, models
+
+        class Book(models.Model):
+            id = fields.IntField(primary_key=True)
+        """,
+    )
+    await run_makemigrations(migrations_dir)
+
+    write_models(
+        """
+        from tortoise import fields, models
+
+        class Book(models.Model):
+            id = fields.IntField(primary_key=True)
+            title = fields.CharField(max_length=100, default="")
+        """,
+    )
+
+    with pytest.raises(InvalidMigrationError) as excinfo:
+        await run_makemigrations(migrations_dir, check_only=True)
+
+    assert "check-only" in str(excinfo.value).lower()
+    assert "0002_add_book_title.py" in str(excinfo.value)
+    all_py_names = {p.name for p in migrations_dir.glob("*.py")}
+    assert all_py_names == {"__init__.py", "0001_initial.py"}
+    sys.path.remove(str(tmp_path))

@@ -59,6 +59,13 @@ poetry run tortoisemarch makemigrations
 
 This creates a file in `tortoisemarch/migrations/` with operations like `CreateModel`, `AddField`, and so on.
 
+`makemigrations` options:
+
+- `--empty` creates a data-migration stub with a `RunPython` placeholder.
+- `--name` sets a custom filename suffix.
+- `--location` overrides the migrations directory.
+- `--check-only` errors out if a migration would be written and prints the filename (useful in CI).
+
 ### Step 2: Apply migrations
 
 ```bash

@@ -102,6 +102,25 @@ def _next_number(migrations_dir: Path) -> int:
     return (max(numbers) + 1) if numbers else 1
 
 
+def preview_migration_filename(
+    operations: list,
+    migrations_dir: str | Path,
+    name: str | None = None,
+    *,
+    empty: bool = False,
+) -> str:
+    """Return the migration filename that would be created."""
+    migrations_dir = Path(migrations_dir)
+    number = _next_number(migrations_dir)
+    if name:
+        filename = f"{number:04d}_{_slugify(name)}.py"
+    elif empty and not operations and number > 1:
+        filename = f"{number:04d}_data_migration.py"
+    else:
+        filename = _auto_name(operations=operations, number=number)
+    return filename
+
+
 def write_migration(
     operations: list,
     migrations_dir: str | Path,

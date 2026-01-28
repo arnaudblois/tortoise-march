@@ -66,6 +66,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Create an empty (data) migration with a RunPython stub.",
     )
     makemig.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Error out if a migration would be written (for CI checks).",
+    )
+    makemig.add_argument(
         "--name",
         type=str,
         help="Optional name for the migration file (used in the filename slug).",
@@ -154,6 +159,7 @@ def main() -> None:
                     location=args.location,
                     empty=args.empty,
                     name=args.name,
+                    check_only=args.check_only,
                 ),
             )
         elif args.command == "migrate":
