@@ -353,9 +353,20 @@ def extract_project_state(
 ) -> ProjectState:
     """Extract models from Tortoise into a ProjectState."""
     apps = apps or Tortoise.apps or {}
-    model_states: dict[str, ModelState] = {}
+    # Count class names so we can disambiguate duplicates by app label and
+    # avoid silently dropping models that share the same class name.
+    name_counts: dict[str, int] = {}
     for models in apps.values():
         for model_cls in models.values():
+            name = model_cls.__name__
+            name_counts[name] = name_counts.get(name, 0) + 1
+
+    model_states: dict[str, ModelState] = {}
+    for app_label, models in apps.items():
+        for model_cls in models.values():
             ms = extract_model_state(model_cls)
-            model_states[ms.name] = ms
+            name = model_cls.__name__
+            key = name if name_counts.get(name, 0) == 1 else f"{app_label}.{name}"
+            ms.name = key
+            model_states[key] = ms
     return ProjectState(model_states=model_states)

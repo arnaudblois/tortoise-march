@@ -450,17 +450,35 @@ def _validate_related_models(
             rm = getattr(fs, "related_model", None)
             if not rm or not isinstance(rm, str):
                 continue
-                if "." not in rm:
-                    continue
-                prefix = rm.split(".", 1)[0]
-                if prefix not in allowed_prefixes:
-                    msg = (
-                        f"Foreign key {ms.name}.{fs.name} refers to '{rm}', "
-                        f"but no app named '{prefix}' is registered. "
-                        f"Registered apps: {sorted(app_labels)}. "
-                        "Update the FK string to use a valid app label."
-                    )
+            if "." not in rm:
+                continue
+            prefix = rm.split(".", 1)[0]
+            if prefix not in allowed_prefixes:
+                msg = (
+                    f"Foreign key {ms.name}.{fs.name} refers to '{rm}', "
+                    f"but no app named '{prefix}' is registered. "
+                    f"Registered apps: {sorted(app_labels)}. "
+                    "Update the FK string to use a valid app label."
+                )
                 raise InvalidMigrationError(msg)
+
+
+def _validate_unique_db_tables(state: ProjectState) -> None:
+    buckets: dict[str, list[str]] = {}
+    for model_key, ms in state.model_states.items():
+        table = ms.db_table.lower()
+        buckets.setdefault(table, []).append(model_key)
+
+    conflicts = {table: names for table, names in buckets.items() if len(names) > 1}
+    if not conflicts:
+        return
+
+    lines = [
+        f"  {table}: {', '.join(sorted(names))}"
+        for table, names in sorted(conflicts.items())
+    ]
+    msg = "Conflicting db_table names detected:\n" + "\n".join(lines)
+    raise InvalidMigrationError(msg)
 
 
 def _prepare_migrations_dir(location: Path | str) -> Path:
@@ -536,6 +554,8 @@ def _build_operations(
     *,
     apps: dict[str, Any],
 ) -> list[Any]:
+    _validate_unique_db_tables(new_state)
+
     module_prefixes = _collect_module_prefixes(apps)
     _validate_related_models(
         new_state,

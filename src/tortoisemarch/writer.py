@@ -15,6 +15,11 @@ import click
 from tortoisemarch.exceptions import InvalidMigrationError
 
 
+def _safe_fragment(text: str) -> str:
+    """Return a lowercase slug fragment safe for filenames."""
+    return re.sub(r"[^a-z0-9_]+", "", text.lower().replace(".", "_"))
+
+
 def _auto_name(operations: list, number: int) -> str:  # noqa: C901, PLR0912
     """Generate a default name based on the operations, like Django does.
 
@@ -48,26 +53,38 @@ def _auto_name(operations: list, number: int) -> str:  # noqa: C901, PLR0912
     for op in chosen:  # only first few, keep short
         cname = op.__class__.__name__
         if cname == "CreateModel":
-            parts.append(f"create_{op.name.lower()}")
+            parts.append(f"create_{_safe_fragment(op.name)}")
         elif cname == "RemoveModel":
-            parts.append(f"remove_{op.name.lower()}")
+            parts.append(f"remove_{_safe_fragment(op.name)}")
         elif cname == "AddField":
-            parts.append(f"add_{op.model_name.lower()}_{op.field_name.lower()}")
+            parts.append(
+                f"add_{_safe_fragment(op.model_name)}_{_safe_fragment(op.field_name)}",
+            )
         elif cname == "RemoveField":
-            parts.append(f"remove_{op.model_name.lower()}_{op.field_name.lower()}")
+            parts.append(
+                f"remove_{_safe_fragment(op.model_name)}_"
+                f"{_safe_fragment(op.field_name)}",
+            )
         elif cname == "AlterField":
-            parts.append(f"alter_{op.model_name.lower()}_{op.field_name.lower()}")
+            parts.append(
+                f"alter_{_safe_fragment(op.model_name)}_{_safe_fragment(op.field_name)}",
+            )
         elif cname == "RenameField":
-            parts.append(f"rename_{op.model_name.lower()}_{op.old_name.lower()}")
+            parts.append(
+                f"rename_{_safe_fragment(op.model_name)}_{_safe_fragment(op.old_name)}",
+            )
         elif cname == "RenameModel":
             parts.append(
-                f"rename_{op.old_name.lower()}_to_{op.new_name.lower()}",
+                f"rename_{_safe_fragment(op.old_name)}_to_{_safe_fragment(op.new_name)}",
             )
         elif cname == "CreateIndex":
             cols = "_".join(op.columns) if getattr(op, "columns", None) else "index"
-            parts.append(f"createindex_{op.model_name.lower()}_{cols.lower()}")
+            parts.append(
+                f"createindex_{_safe_fragment(op.model_name)}_"
+                f"{_safe_fragment(cols)}",
+            )
         elif cname == "RemoveIndex":
-            parts.append(f"removeindex_{op.model_name.lower()}")
+            parts.append(f"removeindex_{_safe_fragment(op.model_name)}")
         elif cname == "RunPython":
             parts.append("runpython")
     if len(operations) > 2:  # noqa: PLR2004

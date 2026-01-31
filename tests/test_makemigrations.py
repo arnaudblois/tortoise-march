@@ -10,7 +10,8 @@ from tortoise import Tortoise
 
 from tortoisemarch import makemigrations as mm
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.makemigrations import makemigrations
+from tortoisemarch.makemigrations import _validate_related_models, makemigrations
+from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 
 
 def newest_migration_text(migrations_dir) -> str:
@@ -286,6 +287,115 @@ async def test_makemigrations_multi_app_with_cross_fk(tmp_path: Path, snapshot):
     sys.path.remove(str(apps_dir))
 
 
+async def test_makemigrations_allows_duplicate_model_names_across_apps(tmp_path: Path):
+    """Models with the same class name across apps should both appear."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").touch()
+
+    apps_dir = tmp_path / "apps"
+    apps_dir.mkdir()
+    sys.path.insert(0, str(apps_dir))
+
+    (apps_dir / "catalog_models.py").write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Book(models.Model):
+                id = fields.IntField(primary_key=True)
+
+                class Meta:
+                    table = "catalog_book"
+            """,
+        ),
+    )
+
+    (apps_dir / "sales_models.py").write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Book(models.Model):
+                id = fields.IntField(primary_key=True)
+
+                class Meta:
+                    table = "sales_book"
+            """,
+        ),
+    )
+
+    modules = {
+        "catalog": ["catalog_models"],
+        "sales": ["sales_models"],
+    }
+
+    await run_makemigrations_with_modules(migrations_dir, modules)
+
+    mig_text = newest_migration_text(migrations_dir)
+    flat = mig_text.replace(" ", "").replace("\n", "").replace('"', "'")
+    assert "CreateModel(name='catalog.Book'" in flat
+    assert "CreateModel(name='sales.Book'" in flat
+    assert "db_table='catalog_book'" in flat
+    assert "db_table='sales_book'" in flat
+    sys.path.remove(str(apps_dir))
+
+
+@pytest.mark.asyncio
+async def test_makemigrations_raises_on_duplicate_db_tables(tmp_path: Path):
+    """Conflicting db_table names across apps should raise."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").touch()
+
+    apps_dir = tmp_path / "apps"
+    apps_dir.mkdir()
+    sys.path.insert(0, str(apps_dir))
+
+    (apps_dir / "catalog_models.py").write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Book(models.Model):
+                id = fields.IntField(primary_key=True)
+
+                class Meta:
+                    table = "shared_book"
+            """,
+        ),
+    )
+
+    (apps_dir / "sales_models.py").write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Book(models.Model):
+                id = fields.IntField(primary_key=True)
+
+                class Meta:
+                    table = "shared_book"
+            """,
+        ),
+    )
+
+    modules = {
+        "catalog": ["catalog_models"],
+        "sales": ["sales_models"],
+    }
+
+    with pytest.raises(InvalidMigrationError) as excinfo:
+        await run_makemigrations_with_modules(migrations_dir, modules)
+
+    msg = str(excinfo.value).lower()
+    assert "conflicting db_table names" in msg
+    assert "shared_book" in msg
+    assert "catalog.book" in msg
+    assert "sales.book" in msg
+    sys.path.remove(str(apps_dir))
+
+
 @pytest.mark.asyncio
 async def test_makemigrations_raises_on_invalid_app_label_in_fk(tmp_path: Path):
     """Ensure we fail fast when FK strings use unknown app labels."""
@@ -332,6 +442,37 @@ async def test_makemigrations_raises_on_invalid_app_label_in_fk(tmp_path: Path):
 
     assert "No app with name" in str(excinfo.value)
     sys.path.remove(str(apps_dir))
+
+
+def test_validate_related_models_rejects_unknown_app_label():
+    """Reject dotted related_model strings with unknown app labels."""
+    state = ProjectState(
+        model_states={
+            "books.Book": ModelState(
+                name="books.Book",
+                db_table="books_book",
+                field_states={
+                    "author": FieldState(
+                        name="author",
+                        field_type="ForeignKeyFieldInstance",
+                        related_model="unknown.Author",
+                        related_table="unknown_author",
+                    ),
+                },
+            ),
+        },
+    )
+
+    with pytest.raises(InvalidMigrationError) as excinfo:
+        _validate_related_models(
+            state,
+            app_labels={"books"},
+            module_prefixes={"books"},
+        )
+
+    msg = str(excinfo.value)
+    assert "unknown.Author" in msg
+    assert "books.Book.author" in msg
 
 
 async def test_makemigrations_emits_renamefield_for_manual_rename(
