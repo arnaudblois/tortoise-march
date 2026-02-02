@@ -475,6 +475,49 @@ def test_validate_related_models_rejects_unknown_app_label():
     assert "books.Book.author" in msg
 
 
+async def test_makemigrations_allows_self_referential_fk(tmp_path: Path, snapshot):
+    """Ensure self-referential FKs do not trigger dependency cycle errors."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+    try:
+        (models_dir / "__init__.py").write_text(
+            textwrap.dedent(
+                """
+                from tortoise import fields, models
+
+                class Node(models.Model):
+                    id = fields.IntField(primary_key=True)
+                    parent = fields.ForeignKeyField(
+                        "models.Node",
+                        null=True,
+                        related_name="children",
+                    )
+                """,
+            ),
+        )
+
+        await run_makemigrations(migrations_dir)
+
+        mig_text = newest_migration_text(migrations_dir)
+        assert "CreateModel" in mig_text
+        assert "ForeignKeyFieldInstance" in mig_text
+        assert (
+            "'related_table': 'node'" in mig_text
+            or '"related_table": "node"' in mig_text
+        )
+        assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    finally:
+        if str(tmp_path) in sys.path:
+            sys.path.remove(str(tmp_path))
+        if "models" in sys.modules:
+            del sys.modules["models"]
+
+
 async def test_makemigrations_emits_renamefield_for_manual_rename(
     tmp_path,
     monkeypatch,

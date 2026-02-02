@@ -301,22 +301,32 @@ def score_candidate(old_name: str, old_fs, new_name: str, new_fs) -> float:
     return score
 
 
+def _build_fk_dependencies(model_states: dict[str, ModelState]) -> dict[str, set[str]]:
+    """Build a dependency map for CreateModel ordering based on FK references."""
+    table_to_model = {ms.db_table.lower(): name for name, ms in model_states.items()}
+
+    deps: dict[str, set[str]] = {name: set() for name in model_states}
+    for name, ms in model_states.items():
+        for fs in ms.field_states.values():
+            if fs.field_type not in FK_TYPES:
+                continue
+            rt = (fs.options.get("related_table") or "").lower()
+            if rt not in table_to_model:
+                continue
+            target = table_to_model[rt]
+            if target == name:
+                continue
+            deps[name].add(target)
+    return deps
+
+
 def _toposort_models_by_fk(model_states: dict[str, ModelState]) -> list[str]:
     """Return model names ordered by foreign key dependencies.
 
     Models are sorted so that tables referenced by foreign keys are created
     before the tables that depend on them. Cycles are detected and rejected.
     """
-    # Map db_table -> model_name for models in this batch
-    table_to_model = {ms.db_table.lower(): name for name, ms in model_states.items()}
-
-    deps: dict[str, set[str]] = {name: set() for name in model_states}
-    for name, ms in model_states.items():
-        for fs in ms.field_states.values():
-            if fs.field_type in FK_TYPES:
-                rt = (fs.options.get("related_table") or "").lower()
-                if rt in table_to_model:
-                    deps[name].add(table_to_model[rt])
+    deps = _build_fk_dependencies(model_states)
 
     # Kahn's algorithm for topological sorting
     ready = sorted([n for n, ds in deps.items() if not ds])

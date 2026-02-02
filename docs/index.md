@@ -48,6 +48,42 @@ from tortoise import Tortoise
 await Tortoise.init(modules={"models": ["myapp.models"]})
 ```
 
+### Configuration
+
+You can configure TortoiseMarch via `pyproject.toml` (Poetry or any tooling that
+supports it) or a `.tortoisemarch.cfg` file.
+
+#### With Poetry (pyproject.toml)
+
+```toml
+[tool.tortoisemarch]
+tortoise_orm = "myproj.settings:TORTOISE_ORM"
+location = "tortoisemarch/migrations"
+include_locations = [
+  { label = "myapp", path = "vendor/myapp/migrations" },
+]
+```
+
+#### With .tortoisemarch.cfg
+
+If you are not using Poetry (or prefer not to use `pyproject.toml`), create a
+`.tortoisemarch.cfg` in your project root:
+
+```ini
+[tortoisemarch]
+tortoise_orm = myproj.settings:TORTOISE_ORM
+location = tortoisemarch/migrations
+src_folder = .
+include_locations = [{"label": "myapp", "path": "vendor/myapp/migrations"}]
+```
+
+Note: `include_locations` must be valid JSON in `.tortoisemarch.cfg`.
+
+Included migrations are planned **before** your project migrations, but already
+applied migrations are never re-run. Their names are namespaced as
+`label:NNNN_name` in the recorder and CLI, so you can `--fake` them if your
+schema already includes those changes.
+
 Generate migrations:
 
 ```bash

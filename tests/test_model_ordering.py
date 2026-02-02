@@ -221,6 +221,36 @@ def test_create_model_cycle_detection():
         )
 
 
+def test_create_model_allows_self_referential_fk():
+    """Self-referential FKs should not be treated as dependency cycles."""
+    node = ModelState(
+        name="Node",
+        db_table="node",
+        field_states={
+            "id": FieldState(
+                name="id",
+                field_type="IntField",
+                primary_key=True,
+            ),
+            "parent": FieldState(
+                name="parent",
+                field_type="ForeignKeyFieldInstance",
+                related_table="node",
+                to_field="id",
+                referenced_type="IntField",
+                null=True,
+            ),
+        },
+    )
+
+    ops = diff_states(
+        ProjectState(model_states={}),
+        ProjectState(model_states={"Node": node}),
+    )
+    create_ops = [op for op in ops if isinstance(op, CreateModel)]
+    assert [op.db_table for op in create_ops] == ["node"]
+
+
 def test_create_model_column_order_is_stable_and_human_friendly():
     """Test CreateModel orders columns deterministically with PK first and FKs last."""
     ms = ModelState(

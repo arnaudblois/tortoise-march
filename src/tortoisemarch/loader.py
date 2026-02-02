@@ -14,6 +14,7 @@ from types import ModuleType
 
 from tortoisemarch.exceptions import DiscoveryError, InvalidMigrationError
 from tortoisemarch.model_state import ProjectState
+from tortoisemarch.utils import safe_module_fragment
 
 __all__ = [
     "apply_migration_to_state",
@@ -118,11 +119,30 @@ def iter_migration_files(migration_dir: Path) -> Iterable[Path]:
         yield path
 
 
-def load_migration_state(migration_dir: Path) -> ProjectState:
+def _apply_migrations_from_dir(
+    state: ProjectState,
+    migration_dir: Path,
+    *,
+    label: str | None = None,
+) -> None:
+    """Apply migrations from a directory into the project state."""
+    prefix = safe_module_fragment(label) if label else "main"
+    for file in iter_migration_files(migration_dir):
+        mod_name = f"tm_mig_{prefix}_{file.stem}"
+        module = import_module_from_path(file_path=file, module_name=mod_name)
+        apply_migration_to_state(state, module)
+
+
+def load_migration_state(
+    migration_dir: Path,
+    *,
+    include_dirs: list[tuple[str, Path]] | None = None,
+) -> ProjectState:
     """Load the full project state by applying all migration files in order.
 
     Args:
         migration_dir: Directory containing numbered migration files.
+        include_dirs: Optional list of (label, path) pairs for extra migration dirs.
 
     Returns:
         A `ProjectState` representing the result of applying all migrations.
@@ -133,9 +153,7 @@ def load_migration_state(migration_dir: Path) -> ProjectState:
 
     """
     state = ProjectState()
-    for file in iter_migration_files(migration_dir):
-        # Make the module name unique and stable for the session
-        mod_name = f"tm_mig_{file.stem}"
-        module = import_module_from_path(file_path=file, module_name=mod_name)
-        apply_migration_to_state(state, module)
+    for label, path in include_dirs or []:
+        _apply_migrations_from_dir(state, path, label=label)
+    _apply_migrations_from_dir(state, migration_dir, label=None)
     return state

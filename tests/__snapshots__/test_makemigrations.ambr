@@ -1,4 +1,40 @@
 # serializer version: 1
+# name: test_makemigrations_allows_self_referential_fk
+  '''
+  
+  from typing import ClassVar
+  from tortoisemarch.base import BaseMigration
+  from tortoisemarch.operations import CreateModel
+  
+  
+  class Migration(BaseMigration):
+      """Auto-generated migration."""
+  
+      operations: ClassVar[list] = [
+          CreateModel(
+              name="Node",
+              db_table="node",
+              fields=[
+                  ("id", "IntField", {"primary_key": True}),
+                  (
+                      "parent",
+                      "ForeignKeyFieldInstance",
+                      {
+                          "null": True,
+                          "db_column": "parent_id",
+                          "related_table": "node",
+                          "related_model": "models.Node",
+                          "to_field": "id",
+                          "on_delete": "CASCADE",
+                          "referenced_type": "IntField",
+                      },
+                  ),
+              ],
+          ),
+      ]
+  
+  '''
+# ---
 # name: test_makemigrations_emits_createindex_for_meta_indexes
   '''
   

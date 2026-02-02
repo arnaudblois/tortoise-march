@@ -17,6 +17,7 @@ from tortoisemarch.exceptions import (
 from tortoisemarch.loader import import_module_from_path, iter_migration_files
 from tortoisemarch.recorder import MigrationRecorder
 from tortoisemarch.schema_editor import PostgresSchemaEditor
+from tortoisemarch.utils import safe_module_fragment
 
 
 def _format_db_target(conf: dict | None) -> str:
@@ -53,6 +54,11 @@ def resolve_target_name(target: str, all_names: list[str]) -> str:
         msg = f"Ambiguous migration target '{target}'. Matches: {', '.join(matches)}"
         raise InvalidMigrationError(msg)
     return matches[0]
+
+
+def _prefixed_name(label: str | None, stem: str) -> str:
+    """Return a recorder name prefixed with the include label."""
+    return f"{label}:{stem}" if label else stem
 
 
 def plan_route(
@@ -114,6 +120,9 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
         config = load_config()
         tortoise_conf = config["tortoise_orm"]
         location = config["location"] or Path("tortoisemarch/migrations")
+        include_locations = config.get("include_locations") or []
+    else:
+        include_locations = []
     location = Path(location)
 
     sql_accum: list[str] = []
@@ -126,9 +135,24 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
             await MigrationRecorder.ensure_table()
             applied = set(await MigrationRecorder.list_applied())
 
-            files = list(iter_migration_files(location))
-            all_names = [f.stem for f in files]
-            name_to_file = {f.stem: f for f in files}
+            sources: list[tuple[str | None, Path]] = [
+                (entry["label"], entry["path"]) for entry in include_locations
+            ]
+            sources.append((None, Path(location)))
+
+            all_names: list[str] = []
+            name_to_file: dict[str, Path] = {}
+            name_to_label: dict[str, str | None] = {}
+
+            for label, path in sources:
+                for file in iter_migration_files(path):
+                    name = _prefixed_name(label, file.stem)
+                    if name in name_to_file:
+                        msg = f"Duplicate migration name detected: {name}"
+                        raise InvalidMigrationError(msg)
+                    all_names.append(name)
+                    name_to_file[name] = file
+                    name_to_label[name] = label
             target_name = None
             if target:
                 target_name = resolve_target_name(target, all_names)
@@ -150,9 +174,14 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
             if direction == "forward":
                 for name in names:
                     file = name_to_file[name]
+                    label = name_to_label[name]
                     click.echo(f"🚀 Migration {name}")
 
-                    module = import_module_from_path(file, f"tm_mig_run_{name}")
+                    prefix = safe_module_fragment(label) if label else "main"
+                    module = import_module_from_path(
+                        file,
+                        f"tm_mig_run_{prefix}_{file.stem}",
+                    )
                     Migration = getattr(module, "Migration", None)  # noqa: N806
                     if Migration is None:
                         msg = f"Migration file '{file.name}' has no 'Migration' class."
@@ -182,9 +211,14 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
             else:
                 for name in names:
                     file = name_to_file[name]
+                    label = name_to_label[name]
                     click.echo(f"⏪ Rolling back {name}")
 
-                    module = import_module_from_path(file, f"tm_mig_run_{name}")
+                    prefix = safe_module_fragment(label) if label else "main"
+                    module = import_module_from_path(
+                        file,
+                        f"tm_mig_run_{prefix}_{file.stem}",
+                    )
                     Migration = getattr(module, "Migration", None)  # noqa: N806
                     if Migration is None:
                         msg = f"Migration file '{file.name}' has no 'Migration' class."

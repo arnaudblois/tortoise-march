@@ -619,10 +619,12 @@ async def makemigrations(
 
     """
     # 1) Resolve configuration
+    include_locations: list[dict[str, Any]] = []
     if not (tortoise_conf and location):
         config = load_config()
         tortoise_conf = config["tortoise_orm"]
         location = config["location"] or Path("tortoisemarch/migrations")
+        include_locations = config.get("include_locations") or []
     location = _prepare_migrations_dir(location)
     tortoise_conf = _tortoise_conf_for_introspection(conf=tortoise_conf)
 
@@ -643,7 +645,10 @@ async def makemigrations(
             return
 
         # 4) Compute operations by diffing old vs new state
-        old_state = load_migration_state(migration_dir=location)
+        old_state = load_migration_state(
+            migration_dir=location,
+            include_dirs=[(e["label"], e["path"]) for e in include_locations],
+        )
         new_state = extract_project_state(apps=Tortoise.apps)
         operations = _build_operations(old_state, new_state, apps=Tortoise.apps)
 
