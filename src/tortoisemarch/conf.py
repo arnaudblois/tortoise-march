@@ -142,7 +142,7 @@ def _resolve_location(cfg: dict[str, Any], *, base_dir: Path) -> Path:
     """Resolve the migrations directory path."""
     loc_str = os.environ.get(
         "TORTOISEMARCH_LOCATION",
-        cfg.get("location", "tortoisemarch/migrations"),
+        cfg.get("location", "migrations"),
     )
     return (base_dir / Path(loc_str)).resolve()
 
@@ -222,9 +222,15 @@ def load_config(pyproject_path: Path | None = None) -> dict[str, Any]:
     Returns:
         A dict with keys:
             - 'tortoise_orm' (dict)
-            - 'location' (Path)
-            - 'include_locations' (list of dicts: {label, path})
-            - 'src_folder' (Path)
+            - 'location' (Path): Absolute path to this project's primary
+              migrations directory. Defaults to
+              `migrations` (relative to `pyproject.toml`).
+            - 'include_locations' (list[dict]): Additional migrations
+              directories to include, each as `{"label": str, "path": Path}`
+              where `path` is absolute.
+            - 'src_folder' (Path): Absolute path prepended to `sys.path`
+              before resolving `tortoise_orm`. Defaults to the directory
+              containing `pyproject.toml` when not configured.
 
     Raises:
         KeyError, TypeError, FileNotFoundError with clear messages when configuration

@@ -58,7 +58,7 @@ supports it) or a `.tortoisemarch.cfg` file.
 ```toml
 [tool.tortoisemarch]
 tortoise_orm = "myproj.settings:TORTOISE_ORM"
-location = "tortoisemarch/migrations"
+location = "migrations"
 include_locations = [
   { label = "myapp", path = "vendor/myapp/migrations" },
 ]
@@ -72,7 +72,7 @@ If you are not using Poetry (or prefer not to use `pyproject.toml`), create a
 ```ini
 [tortoisemarch]
 tortoise_orm = myproj.settings:TORTOISE_ORM
-location = tortoisemarch/migrations
+location = migrations
 src_folder = .
 include_locations = [{"label": "myapp", "path": "vendor/myapp/migrations"}]
 ```
@@ -96,7 +96,7 @@ Apply them:
 poetry run tortoisemarch migrate
 ```
 
-New files will appear under `tortoisemarch/migrations/` with operations like `CreateModel`, `AddField`, `RenameField`, and friends.
+New files will appear under `migrations/` with operations like `CreateModel`, `AddField`, `RenameField`, and friends.
 
 `makemigrations` options:
 

@@ -119,7 +119,7 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
     if not (tortoise_conf and location):
         config = load_config()
         tortoise_conf = config["tortoise_orm"]
-        location = config["location"] or Path("tortoisemarch/migrations")
+        location = config["location"] or Path("migrations")
         include_locations = config.get("include_locations") or []
     else:
         include_locations = []

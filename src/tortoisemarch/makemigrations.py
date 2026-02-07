@@ -623,7 +623,7 @@ async def makemigrations(
     if not (tortoise_conf and location):
         config = load_config()
         tortoise_conf = config["tortoise_orm"]
-        location = config["location"] or Path("tortoisemarch/migrations")
+        location = config["location"] or Path("migrations")
         include_locations = config.get("include_locations") or []
     location = _prepare_migrations_dir(location)
     tortoise_conf = _tortoise_conf_for_introspection(conf=tortoise_conf)
