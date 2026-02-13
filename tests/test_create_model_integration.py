@@ -13,7 +13,9 @@ async def test_create_model_table_exists():
     await Tortoise.init(
         config={
             "connections": {"default": DATABASE_URL},
-            "apps": {"models": {"models": [], "default_connection": "default"}},
+            "apps": {
+                "models": {"models": ["tests.models"], "default_connection": "default"},
+            },
         },
     )
     conn = Tortoise.get_connection("default")

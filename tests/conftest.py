@@ -13,7 +13,10 @@ async def _drop_schema():
     await Tortoise.init(
         config={
             "connections": {"default": DATABASE_URL},
-            "apps": {"models": {"models": [], "default_connection": "default"}},
+            # We use a real module because Tortoise 1.1.2 rejects empty model lists.
+            "apps": {
+                "models": {"models": ["tests.models"], "default_connection": "default"},
+            },
         },
     )
     conn = Tortoise.get_connection("default")

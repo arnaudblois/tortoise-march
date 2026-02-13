@@ -14,7 +14,7 @@ tortoisemarch = "tortoisemarch.cli:main"
 
 [tool.poetry.dependencies]
 python = ">=3.12"
-tortoise-orm = "^0.25.1"
+tortoise-orm = "^1.1.2"
 asyncpg = "^0.31.0"
 black = "^26.1.0"
 

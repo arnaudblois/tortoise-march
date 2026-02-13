@@ -10,7 +10,11 @@ from tortoise import Tortoise
 
 from tortoisemarch import makemigrations as mm
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.makemigrations import _validate_related_models, makemigrations
+from tortoisemarch.makemigrations import (
+    _init_tortoise_apps,
+    _validate_related_models,
+    makemigrations,
+)
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 
 
@@ -63,6 +67,33 @@ async def run_makemigrations_with_modules(
         },
     }
     await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+
+@pytest.mark.asyncio
+async def test_init_tortoise_apps_passes_through_app_models(monkeypatch):
+    """Tortoise init should receive app model declarations unchanged."""
+    captured: dict[str, dict] = {}
+
+    async def fake_init(cls, *, config: dict) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr(
+        "tortoisemarch.makemigrations.Tortoise.init",
+        classmethod(fake_init),
+    )
+
+    conf = {
+        "connections": {"default": "sqlite://:memory:"},
+        "apps": {
+            "models": {
+                "models": ("tests.models",),
+                "default_connection": "default",
+            },
+        },
+    }
+    await _init_tortoise_apps(conf)
+
+    assert captured["config"]["apps"]["models"]["models"] == ("tests.models",)
 
 
 async def test_makemigrations_integration(tmp_path: Path, snapshot):

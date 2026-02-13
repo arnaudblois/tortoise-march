@@ -6,7 +6,7 @@ import pytest
 
 from tortoisemarch.base import BaseMigration
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.migrate import plan_route, resolve_target_name
+from tortoisemarch.migrate import plan_route, resolve_target_name, tortoise_context
 from tortoisemarch.operations import AddField, AlterField, CreateModel, Operation
 from tortoisemarch.schema_editor import PostgresSchemaEditor
 
@@ -100,6 +100,41 @@ async def test_unapply_sql_for_create_and_addfield():
         'ALTER TABLE "foo" DROP COLUMN IF EXISTS "bar";',
         'DROP TABLE IF EXISTS "foo";',
     ]
+
+
+@pytest.mark.asyncio
+async def test_tortoise_context_passes_through_app_models(monkeypatch):
+    """Migration context should pass app model declarations through unchanged."""
+    captured: dict[str, dict] = {}
+
+    async def fake_init(cls, *, config: dict) -> None:
+        captured["config"] = config
+
+    async def fake_close_connections(cls) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "tortoisemarch.migrate.Tortoise.init",
+        classmethod(fake_init),
+    )
+    monkeypatch.setattr(
+        "tortoisemarch.migrate.Tortoise.close_connections",
+        classmethod(fake_close_connections),
+    )
+
+    conf = {
+        "connections": {"default": "sqlite://:memory:"},
+        "apps": {
+            "models": {
+                "models": ("tests.models",),
+                "default_connection": "default",
+            },
+        },
+    }
+    async with tortoise_context(conf):
+        pass
+
+    assert captured["config"]["apps"]["models"]["models"] == ("tests.models",)
 
 
 @pytest.mark.asyncio
