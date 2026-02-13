@@ -4,6 +4,7 @@ import sys
 import textwrap
 
 from tortoise import Tortoise, fields
+from tortoise.contrib.test import tortoise_test_context
 from tortoise.models import Model
 
 from tortoisemarch.extractor import extract_project_state
@@ -46,47 +47,44 @@ class Book(Model):
 
 async def test_extract_project_state_with_fk():
     """Test the extraction of the code into a ProjectState."""
-    await Tortoise.init(
-        db_url="sqlite://:memory:",
-        modules={"models": [__name__]},
-    )
-    state = extract_project_state(apps=Tortoise.apps)
-    assert isinstance(state, ProjectState)
-    assert set(state.model_states.keys()) == {"Author", "Book"}
+    async with tortoise_test_context([__name__]):
+        state = extract_project_state(apps=Tortoise.apps)
+        assert isinstance(state, ProjectState)
+        assert set(state.model_states.keys()) == {"Author", "Book"}
 
-    author_model = state.get_model("Author")
-    book_model = state.get_model("Book")
+        author_model = state.get_model("Author")
+        book_model = state.get_model("Book")
 
-    assert author_model.db_table == "author"
-    assert book_model.db_table == "book"
+        assert author_model.db_table == "author"
+        assert book_model.db_table == "book"
 
-    author_fields = dict(author_model.field_states)
-    book_fields = dict(book_model.field_states)
+        author_fields = dict(author_model.field_states)
+        book_fields = dict(book_model.field_states)
 
-    # Author fields
-    assert author_fields["id"].field_type == "IntField"
-    assert author_fields["name"].field_type == "CharField"
-    assert author_fields["active"].field_type == "BooleanField"
-    assert author_fields["active"].default is True
-    # Book fields
-    # We only keep the logical FK field 'author', the backing column is in db_column
-    assert set(book_fields.keys()) == {"id", "title", "author"}
+        # Author fields
+        assert author_fields["id"].field_type == "IntField"
+        assert author_fields["name"].field_type == "CharField"
+        assert author_fields["active"].field_type == "BooleanField"
+        assert author_fields["active"].default is True
+        # Book fields
+        # We only keep the logical FK field 'author', the backing column is in db_column
+        assert set(book_fields.keys()) == {"id", "title", "author"}
 
-    assert book_fields["id"].field_type == "UUIDField"
-    assert book_fields["title"].field_type == "CharField"
+        assert book_fields["id"].field_type == "UUIDField"
+        assert book_fields["title"].field_type == "CharField"
 
-    fk = book_fields["author"]
-    # Logical type
-    assert fk.field_type == "ForeignKeyFieldInstance"
-    # Backing DB column name
-    assert fk.db_column == "author_id"
-    # FK target type inferred from Author.id (IntField)
-    assert fk.referenced_type == "IntField"
-    # Nullability
-    assert fk.null is False
-    # Sanity: relation metadata
-    assert fk.related_table == "author"
-    assert fk.to_field == "id"
+        fk = book_fields["author"]
+        # Logical type
+        assert fk.field_type == "ForeignKeyFieldInstance"
+        # Backing DB column name
+        assert fk.db_column == "author_id"
+        # FK target type inferred from Author.id (IntField)
+        assert fk.referenced_type == "IntField"
+        # Nullability
+        assert fk.null is False
+        # Sanity: relation metadata
+        assert fk.related_table == "author"
+        assert fk.to_field == "id"
 
 
 async def test_extract_project_state_multiple_apps(tmp_path):
@@ -137,7 +135,7 @@ async def test_extract_project_state_multiple_apps(tmp_path):
         assert state.get_model("CatalogEntry").db_table == "catalog_entry"
         assert state.get_model("AccountUser").db_table == "account_user"
     finally:
-        await Tortoise._reset_apps()  # noqa: SLF001
+        await Tortoise.close_connections()
         sys.path.remove(str(tmp_path))
 
 

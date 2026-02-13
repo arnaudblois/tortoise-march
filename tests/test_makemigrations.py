@@ -6,7 +6,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from tortoise import Tortoise
 
 from tortoisemarch import makemigrations as mm
 from tortoisemarch.exceptions import InvalidMigrationError
@@ -32,7 +31,6 @@ async def run_makemigrations(migrations_dir, *, check_only: bool = False) -> Non
         del sys.modules["models"]
     importlib.import_module("models")
 
-    await Tortoise._reset_apps()  # noqa: SLF001
     tortoise_orm = {
         "connections": {
             "default": "postgres://postgres:test@localhost:5445/testdb",
@@ -56,7 +54,6 @@ async def run_makemigrations_with_modules(
         if mod in sys.modules:
             del sys.modules[mod]
         importlib.import_module(mod)
-    await Tortoise._reset_apps()  # noqa: SLF001
     tortoise_orm = {
         "connections": {
             "default": "postgres://postgres:test@localhost:5445/testdb",

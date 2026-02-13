@@ -99,7 +99,6 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
     await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
 
     # Insert a row to ensure schema works
-    await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
     from models import Book  # noqa: PLC0415
 
@@ -137,7 +136,6 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
 
     # Apply and verify pre-existing data survived
     await migrate(tortoise_orm, migrations_dir)
-    await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
     from models import Book  # noqa: PLC0415
 
@@ -171,7 +169,6 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
 
     # Apply and check defaults/data
     await migrate(tortoise_orm, migrations_dir)
-    await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
     from models import Author, Book  # noqa: PLC0415
 
@@ -216,7 +213,6 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
 
     # Apply and verify FK works + existing data survives
     await migrate(tortoise_orm, migrations_dir)
-    await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
     from models import Author, Book  # noqa: PLC0415
 
@@ -263,7 +259,6 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
 
     # Apply and ensure data still present
     await migrate(tortoise_orm, migrations_dir)
-    await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
     from models import Author, Book  # noqa: PLC0415
 
@@ -304,7 +299,6 @@ async def test_migrate_roundtrip_with_exact_sql(tmp_path: Path):  # noqa: PLR091
 
     # Apply and verify we can create an author with no name
     await migrate(tortoise_orm, migrations_dir)
-    await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
     from models import Author, Book  # noqa: PLC0415
 
@@ -350,7 +344,6 @@ async def test_migrate_rolls_back_and_not_recorded_on_failure(tmp_path: Path):
         await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
 
     # Ensure migration not recorded
-    await Tortoise._reset_apps()  # noqa: SLF001
     async with tortoise_context(tortoise_orm):
         applied = await MigrationRecorder.list_applied()
         assert "0001_boom" not in applied
@@ -402,7 +395,6 @@ async def test_runpython_data_migration_uses_orm(tmp_path: Path):
     await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
 
     # Insert some data using the ORM (now we init Tortoise against Postgres)
-    await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
     from models import Book  # noqa: PLC0415
 
@@ -445,7 +437,6 @@ async def test_runpython_data_migration_uses_orm(tmp_path: Path):
     await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
 
     # Verify the RunPython code actually ran and used the ORM
-    await Tortoise._reset_apps()  # noqa: SLF001
     await Tortoise.init(config=_tortoise_conf("models"))
     books = await Book.all().order_by("title")
     titles = [b.title for b in books]

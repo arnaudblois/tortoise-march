@@ -27,9 +27,6 @@ async def _drop_schema():
 @pytest.fixture(autouse=True)
 async def reset_tortoise():
     """Clean Tortoise state and DB between tests."""
-    # Clear global ORM state
-    await Tortoise._reset_apps()  # noqa: SLF001
-
     # Drop schema
     await _drop_schema()
 
