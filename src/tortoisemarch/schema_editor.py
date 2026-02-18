@@ -322,7 +322,10 @@ class PostgresSchemaEditor(SchemaEditor):
         if not options.get("null", False) and not options.get("primary_key"):
             parts.append("NOT NULL")
 
-        if options.get("unique") and not options.get("primary_key"):
+        # We enforce uniqueness for OneToOne fields even if legacy migration
+        # options omitted `unique=True`, because one-to-one semantics require it.
+        is_unique = bool(options.get("unique")) or field_type == "OneToOneFieldInstance"
+        if is_unique and not options.get("primary_key"):
             parts.append("UNIQUE")
 
         # ---- default -----------------------------------------------------

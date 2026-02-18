@@ -257,6 +257,10 @@ def extract_field_state(name: str, field: Any) -> FieldState:
                 "referenced_type": ref_type,  # 'IntField'/'UUIDField'/... or None
             },
         )
+        if field_type == "OneToOneFieldInstance":
+            # We always persist one-to-one as unique so generated SQL and diffs
+            # remain stable even if upstream field metadata changes.
+            opts["unique"] = True
 
     return FieldState(name=name, field_type=field_type, **opts)
 

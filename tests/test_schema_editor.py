@@ -401,6 +401,43 @@ def test_unique_non_pk_still_emits_unique():
     assert "UNIQUE" in sql
 
 
+def test_one_to_one_create_model_implies_unique_without_option():
+    """OneToOne fields should emit UNIQUE even when legacy options omit it."""
+    ed = PostgresSchemaEditor()
+    sql = ed.sql_create_model(
+        "member_profile",
+        [
+            ("id", "IntField", {"primary_key": True}),
+            (
+                "member",
+                "OneToOneFieldInstance",
+                {
+                    "related_table": "member",
+                    "to_field": "id",
+                    "referenced_type": "IntField",
+                },
+            ),
+        ],
+    )
+    assert '"member_id" INTEGER NOT NULL UNIQUE REFERENCES "member" ("id")' in sql
+
+
+def test_one_to_one_add_field_implies_unique_without_option():
+    """OneToOne AddField SQL should enforce UNIQUE for legacy option payloads."""
+    ed = PostgresSchemaEditor()
+    sql = ed.sql_add_field(
+        db_table="member_profile",
+        field_name="member",
+        field_type="OneToOneFieldInstance",
+        options={
+            "related_table": "member",
+            "to_field": "id",
+            "referenced_type": "IntField",
+        },
+    )
+    assert '"member_id" INTEGER NOT NULL UNIQUE REFERENCES "member" ("id")' in sql
+
+
 def test_sql_create_index_multi_column_and_unique():
     """sql_create_index should handle multi-column and unique flags."""
     ed = PostgresSchemaEditor()

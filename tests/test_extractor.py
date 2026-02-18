@@ -170,3 +170,42 @@ def test_extract_model_state_respects_indexes_and_unique_together(tmp_path):
         assert (("b", "c"), True) in indexes
     finally:
         sys.path.remove(str(tmp_path))
+
+
+async def test_extract_one_to_one_always_sets_unique(tmp_path):
+    """OneToOne extraction should persist unique=True for schema stability."""
+    mod = tmp_path / "one_to_one_models.py"
+    mod.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class Member(models.Model):
+                id = fields.IntField(primary_key=True)
+
+                class Meta:
+                    table = "member"
+
+            class Profile(models.Model):
+                id = fields.IntField(primary_key=True)
+                member = fields.OneToOneField("models.Member", related_name="profile")
+
+                class Meta:
+                    table = "profile"
+            """,
+        ),
+    )
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        await Tortoise.init(
+            db_url="sqlite://:memory:",
+            modules={"models": ["one_to_one_models"]},
+        )
+        state = extract_project_state(apps=Tortoise.apps)
+        profile = state.get_model("Profile")
+        assert profile.field_states["member"].field_type == "OneToOneFieldInstance"
+        assert profile.field_states["member"].unique is True
+    finally:
+        await Tortoise.close_connections()
+        sys.path.remove(str(tmp_path))
