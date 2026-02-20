@@ -246,6 +246,31 @@ def test_alter_field_allows_charfield_length_change():
     _validate_safe_alters([op])  # should not raise
 
 
+def test_alter_field_allows_charfield_to_textfield():
+    """CharField -> TextField should be treated as a supported widening change."""
+    op = AlterField(
+        model_name="Post",
+        db_table="post",
+        field_name="content",
+        old_options={"type": "CharField", "max_length": 255},
+        new_options={"type": "TextField"},
+    )
+    _validate_safe_alters([op])  # should not raise
+
+
+def test_alter_field_textfield_to_charfield_still_raises():
+    """TextField -> CharField stays unsupported because it can truncate data."""
+    op = AlterField(
+        model_name="Post",
+        db_table="post",
+        field_name="content",
+        old_options={"type": "TextField"},
+        new_options={"type": "CharField", "max_length": 255},
+    )
+    with pytest.raises(InvalidMigrationError, match="Unsupported AlterField changes"):
+        _validate_safe_alters([op])
+
+
 def test_alter_field_allows_db_column_change_with_rename():
     """db_column changes paired with a rename should be allowed."""
     op = AlterField(

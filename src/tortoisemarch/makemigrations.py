@@ -179,7 +179,10 @@ def _is_supported_type_change(
     int_rank = {"SmallIntField": 0, "IntField": 1, "BigIntField": 2}
     if old_type in int_rank and new_type in int_rank:
         return int_rank[new_type] > int_rank[old_type]
-    return old_type == "CharField" and new_type == "CharField"
+    # We allow widening from bounded VARCHAR to unbounded TEXT, but not the
+    # reverse. Narrowing back to CharField may truncate data and needs a custom
+    # migration where we can make that decision explicitly.
+    return old_type == "CharField" and new_type in {"CharField", "TextField"}
 
 
 def _validate_safe_alters(operations: list[Any]) -> None:  # noqa: C901
@@ -215,7 +218,10 @@ def _validate_safe_alters(operations: list[Any]) -> None:  # noqa: C901
         if "type" in diffs and _is_supported_type_change(old_type, new_type):
             diffs.remove("type")
 
-        if "max_length" in diffs and old_type == new_type == "CharField":
+        if "max_length" in diffs and (
+            old_type == new_type == "CharField"
+            or (old_type == "CharField" and new_type == "TextField")
+        ):
             diffs.remove("max_length")
 
         if "related_table" in diffs:

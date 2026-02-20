@@ -440,8 +440,8 @@ class PostgresSchemaEditor(SchemaEditor):
         """
         stmts: list[str] = []
 
-        old_type = old.get("type")
-        new_type = new.get("type")
+        old_type = old.get("type") or old.get("field_type")
+        new_type = new.get("type") or new.get("field_type")
 
         # If type is missing on either side, we can't safely infer this path here.
         if old_type is None or new_type is None:
@@ -457,6 +457,14 @@ class PostgresSchemaEditor(SchemaEditor):
                     f"ALTER COLUMN {self._q_ident(column_name)} "
                     f"TYPE {new_sql_type};",
                 )
+            return stmts
+
+        if old_type == "CharField" and new_type == "TextField":
+            stmts.append(
+                f"ALTER TABLE {self._q_ident(db_table.lower())} "
+                f"ALTER COLUMN {self._q_ident(column_name)} "
+                "TYPE TEXT;",
+            )
             return stmts
 
         if old_type != "CharField" or new_type != "CharField":

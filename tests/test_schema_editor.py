@@ -397,8 +397,7 @@ def test_unique_non_pk_still_emits_unique():
             ("slug", "CharField", {"max_length": 20, "unique": True}),
         ],
     )
-    assert "slug" in sql
-    assert "UNIQUE" in sql
+    assert '"slug" VARCHAR(20) NOT NULL UNIQUE);' in sql
 
 
 def test_one_to_one_create_model_implies_unique_without_option():
@@ -457,7 +456,7 @@ def test_sql_create_index_multi_column_and_unique():
         columns=("a", "b"),
         unique=True,
     )
-    assert "UNIQUE INDEX" in sql_unique
+    assert sql_unique == 'CREATE UNIQUE INDEX "thing_ab_uniq" ON "thing" ("a", "b");'
 
 
 def test_sql_create_model_emits_indexes():
@@ -510,7 +509,7 @@ def test_sql_alter_field_handles_index_changes():
         old_options={"type": "IntField", "index": True},
         new_options={"type": "IntField", "index": False},
     )
-    assert any("DROP INDEX" in s for s in stmts)
+    assert stmts == ['DROP INDEX IF EXISTS "invitation_membership_idx";']
 
 
 def test_sql_alter_field_supports_integer_widening():
@@ -523,7 +522,7 @@ def test_sql_alter_field_supports_integer_widening():
         old_options={"type": "IntField"},
         new_options={"type": "BigIntField"},
     )
-    assert any("TYPE BIGINT" in s for s in stmts)
+    assert stmts == ['ALTER TABLE "audit_log" ALTER COLUMN "id" TYPE BIGINT;']
 
     stmts = ed.sql_alter_field(
         db_table="audit_log",
@@ -531,4 +530,16 @@ def test_sql_alter_field_supports_integer_widening():
         old_options={"type": "SmallIntField"},
         new_options={"type": "IntField"},
     )
-    assert any("TYPE INTEGER" in s for s in stmts)
+    assert stmts == ['ALTER TABLE "audit_log" ALTER COLUMN "id" TYPE INTEGER;']
+
+
+def test_sql_alter_field_supports_charfield_to_textfield():
+    """CharField -> TextField should emit a TYPE TEXT alteration."""
+    ed = PostgresSchemaEditor()
+    stmts = ed.sql_alter_field(
+        db_table="post",
+        field_name="content",
+        old_options={"type": "CharField", "max_length": 255},
+        new_options={"type": "TextField"},
+    )
+    assert stmts == ['ALTER TABLE "post" ALTER COLUMN "content" TYPE TEXT;']
