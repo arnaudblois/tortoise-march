@@ -322,7 +322,7 @@ def _choose_renames_interactive(  # noqa: C901
     """Return {model_key: {old_name: new_name}} after interactive selection.
 
     We:
-      1) Build candidate lists (same-type) for each removed field with scores.
+      1) Build candidate lists (compatible-type) for each removed field with scores.
       2) Order removed fields by their best candidate score (desc) so we ask
          the most likely first.
       3) For each removed field, first offer a quick Y/n for the best pair,

@@ -116,6 +116,22 @@ def _table_similarity(a: str, b: str) -> float:
     return _name_similarity(a, b)
 
 
+def _is_supported_rename_type_change(old_type: str, new_type: str) -> bool:
+    """Return True when a rename candidate uses a supported type transition.
+
+    We keep this aligned with makemigrations alter-validation rules so we do
+    not suggest renames that would later be rejected as unsupported alters.
+    """
+    if old_type == new_type:
+        return True
+
+    int_rank = {"SmallIntField": 0, "IntField": 1, "BigIntField": 2}
+    if old_type in int_rank and new_type in int_rank:
+        return int_rank[new_type] > int_rank[old_type]
+
+    return old_type == "CharField" and new_type == "TextField"
+
+
 def _schema_fields(ms: ModelState) -> dict:
     """Return schema-relevant FieldStates for a model."""
     return {
@@ -252,7 +268,7 @@ def _detect_model_renames(  # noqa: C901
 
 def score_candidate(old_name: str, old_fs, new_name: str, new_fs) -> float:
     """Score how likely (old_name -> new_name) is a rename."""
-    if new_fs.field_type != old_fs.field_type:
+    if not _is_supported_rename_type_change(old_fs.field_type, new_fs.field_type):
         return -1.0
 
     old_opts = _options_with_type(old_fs)

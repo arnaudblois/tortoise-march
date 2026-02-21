@@ -188,6 +188,41 @@ def test_diff_states_emits_alterfield_for_charfield_length_even_if_compacted():
     assert alters[0].new_options["max_length"] == 300  # noqa: PLR2004
 
 
+def test_diff_states_emits_rename_plus_alter_for_charfield_to_textfield():
+    """Confirmed rename with CharField -> TextField should emit one AlterField."""
+    old_fields = [
+        ("id", "IntField", {"primary_key": True}),
+        ("author", "CharField", {"max_length": 128}),
+    ]
+    new_fields = [
+        ("id", "IntField", {"primary_key": True}),
+        ("book_author", "TextField", {}),
+    ]
+    old = project({"User": model("User", old_fields)})
+    new = project({"User": model("User", new_fields)})
+
+    ops = diff_states(
+        old,
+        new,
+        rename_map={"User": {"author": "book_author"}},
+    )
+
+    alter_ops = [
+        op for op in ops if isinstance(op, AlterField) and op.field_name == "author"
+    ]
+    assert len(alter_ops) == 1
+    alter = alter_ops[0]
+    assert alter.new_name == "book_author"
+    assert alter.old_options.get("type") == "CharField"
+    assert alter.new_options.get("type") == "TextField"
+    assert not any(
+        isinstance(op, RemoveField) and op.field_name == "author" for op in ops
+    )
+    assert not any(
+        isinstance(op, AddField) and op.field_name == "book_author" for op in ops
+    )
+
+
 def test_fk_defaults_normalized_to_avoid_spurious_alter():
     """Missing implicit FK defaults should not trigger an AlterField diff."""
     old = project(

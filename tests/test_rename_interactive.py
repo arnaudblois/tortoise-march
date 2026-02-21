@@ -170,3 +170,22 @@ def test_choose_renames_respects_min_score_threshold(monkeypatch):
 
     assert not rename_map
     assert called["safe"] is False  # no prompt when there are no candidates
+
+
+def test_choose_renames_allows_charfield_to_textfield(monkeypatch):
+    """CharField -> TextField should still be a valid rename candidate."""
+    model_key, from_state, to_state = _state_for_single_model(
+        old_fields={"author": DummyFieldState("CharField", max_length=128)},
+        new_fields={"book_author": DummyFieldState("TextField")},
+    )
+
+    monkeypatch.setattr(mm, "_safe_input", lambda *_, **__: True)
+    monkeypatch.setattr(mm, "click", types.SimpleNamespace(echo=lambda *_, **__: None))
+
+    rename_map = mm._choose_renames_interactive(  # noqa: SLF001
+        from_state,
+        to_state,
+        min_score=0.0,
+    )
+
+    assert rename_map == {model_key: {"author": "book_author"}}
