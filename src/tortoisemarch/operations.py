@@ -45,6 +45,24 @@ def _sanitize_options_for_code(opts: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _prune_options_for_field_type(
+    field_type: str,
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    """Drop type-specific options that are invalid for the resulting field type.
+
+    `field_type` here is the destination type after applying AlterField.
+    We keep this intentionally minimal: we only prune options that we know can
+    leak from a previous type and cause persistent diff churn after migration
+    replay. This preserves existing partial-alter semantics for all other keys.
+    """
+    pruned = dict(options)
+    length_bound_types = {"CharField", "CharEnumField"}
+    if field_type not in length_bound_types:
+        pruned.pop("max_length", None)
+    return pruned
+
+
 def default_index_name(db_table: str, columns: tuple[str, ...], *, unique: bool) -> str:
     """Return a stable index name given table/columns/uniqueness."""
     cols = "_".join(c.lower() for c in columns)
@@ -448,6 +466,9 @@ class AlterField(Operation):
             if key == "type":
                 continue
             base_opts[key] = value
+
+        # Prune using the destination type, not the source type.
+        base_opts = _prune_options_for_field_type(new_type, base_opts)
 
         new_fs = FieldState(
             name=dst_name,

@@ -1,30 +1,29 @@
 """Tests for loading migrations with included directories."""
 
 from pathlib import Path
+from textwrap import dedent
 
 from tortoisemarch.loader import load_migration_state
 
 
 def _write_migration(path: Path, model_name: str, table: str) -> None:
-    path.write_text(
-        "\n".join(
-            [
-                "from tortoisemarch.base import BaseMigration",
-                "from tortoisemarch.operations import CreateModel",
-                "",
-                "class Migration(BaseMigration):",
-                "    operations = [",
-                "        CreateModel(",
-                f'            name="{model_name}",',
-                f'            db_table="{table}",',
-                '            fields=[("id", "IntField", {"primary_key": True})],',
-                "        ),",
-                "    ]",
-                "",
-            ],
-        ),
-        encoding="utf-8",
-    )
+    """Write a minimal migration module for a single CreateModel operation."""
+    content = dedent(
+        f"""
+        from tortoisemarch.base import BaseMigration
+        from tortoisemarch.operations import CreateModel
+
+        class Migration(BaseMigration):
+            operations = [
+                CreateModel(
+                    name={model_name!r},
+                    db_table={table!r},
+                    fields=[("id", "IntField", {{"primary_key": True}})],
+                ),
+            ]
+        """,
+    ).lstrip()
+    path.write_text(content, encoding="utf-8")
 
 
 def test_load_migration_state_with_includes(tmp_path: Path) -> None:

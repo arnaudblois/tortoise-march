@@ -2,6 +2,7 @@
 
 from enum import Enum
 
+from tortoisemarch.differ import diff_states
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 from tortoisemarch.operations import (
     AddField,
@@ -254,6 +255,106 @@ def test_alter_field_mutate_state_preserves_existing_options():
     assert fs.max_length == max_length
     assert fs.null is False
     assert fs.default == "python_callable"
+
+
+def test_alter_field_mutate_state_prunes_stale_length_on_textfield_rename():
+    """Replaying CharField -> TextField should not keep stale max_length."""
+    fields = [("author", "CharField", {"null": False, "max_length": 255})]
+    state = ProjectState(model_states={"User": model("User", fields, db_table="user")})
+    op = AlterField(
+        model_name="User",
+        db_table="user",
+        field_name="author",
+        old_options={"type": "CharField", "max_length": 255},
+        new_options={"type": "TextField"},
+        new_name="book_author",
+    )
+    op.mutate_state(state)
+
+    fields = state.model_states["User"].field_states
+    assert "author" not in fields
+    assert "book_author" in fields
+    fs = fields["book_author"]
+    assert fs.field_type == "TextField"
+    assert fs.max_length is None
+
+
+def test_replayed_charfield_to_textfield_rename_has_no_follow_up_alter():
+    """Replay state should match model state and avoid max_length churn."""
+    fields = [("author", "CharField", {"null": False, "max_length": 255})]
+    replayed = ProjectState(
+        model_states={"User": model("User", fields, db_table="user")},
+    )
+    AlterField(
+        model_name="User",
+        db_table="user",
+        field_name="author",
+        old_options={"type": "CharField", "max_length": 255},
+        new_options={"type": "TextField"},
+        new_name="book_author",
+    ).mutate_state(replayed)
+
+    fields = [("book_author", "TextField", {"null": False})]
+    current = ProjectState(
+        model_states={"User": model("User", fields, db_table="user")},
+    )
+
+    ops = diff_states(replayed, current)
+    assert not any(op for op in ops if isinstance(op, AlterField))
+
+
+def test_replayed_two_factor_secret_rename_to_text_has_no_churn():
+    """Replay for _two_factor_secret -> two_factor_secret should stay canonical."""
+    old_field = (
+        "_two_factor_secret",
+        "CharField",
+        {"null": False, "max_length": 255, "default": "python_callable"},
+    )
+    replayed = ProjectState(
+        model_states={"User": model("User", [old_field], db_table="user")},
+    )
+    AlterField(
+        model_name="User",
+        db_table="user",
+        field_name="_two_factor_secret",
+        old_options={"type": "CharField", "max_length": 255},
+        new_options={"type": "TextField"},
+        new_name="two_factor_secret",
+    ).mutate_state(replayed)
+
+    fs = replayed.model_states["User"].field_states["two_factor_secret"]
+    assert fs.field_type == "TextField"
+    assert fs.max_length is None
+    assert fs.default == "python_callable"
+    field = (
+        "two_factor_secret",
+        "TextField",
+        {"null": False, "default": "python_callable"},
+    )
+    current = ProjectState(
+        model_states={"User": model("User", [field], db_table="user")},
+    )
+
+    ops = diff_states(replayed, current)
+    assert not any(isinstance(op, AlterField) for op in ops)
+
+
+def test_alter_field_mutate_state_keeps_charfield_length_change():
+    """CharField max_length changes should still survive replay as before."""
+    fields = [("author", "CharField", {"null": False, "max_length": 120})]
+    state = ProjectState(model_states={"User": model("User", fields, db_table="user")})
+    op = AlterField(
+        model_name="User",
+        db_table="user",
+        field_name="author",
+        old_options={"type": "CharField", "max_length": 120, "null": False},
+        new_options={"type": "CharField", "max_length": 200, "null": False},
+    )
+    op.mutate_state(state)
+
+    fs = state.model_states["User"].field_states["author"]
+    assert fs.field_type == "CharField"
+    assert fs.max_length == 200  # noqa: PLR2004
 
 
 def test_add_field_fk_metadata_preserved_in_state():
