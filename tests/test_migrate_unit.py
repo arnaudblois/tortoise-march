@@ -6,7 +6,12 @@ import pytest
 
 from tortoisemarch.base import BaseMigration
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.migrate import plan_route, resolve_target_name, tortoise_context
+from tortoisemarch.migrate import (
+    plan_route,
+    resolve_target_name,
+    tortoise_context,
+    validate_applied_migration_checksums,
+)
 from tortoisemarch.operations import AddField, AlterField, CreateModel, Operation
 from tortoisemarch.schema_editor import PostgresSchemaEditor
 
@@ -52,6 +57,39 @@ def test_plan_route_forward_backward_and_noop():
     direction, names = plan_route({"0001_initial", "0002"}, all_names, "0002")
     assert direction == "noop"
     assert names == []
+
+
+def test_validate_applied_migration_checksums_accepts_exact_match():
+    """Checksum validation should pass when every applied migration matches."""
+    validate_applied_migration_checksums(
+        applied_checksums={
+            "0001_initial": "abc123",
+            "0002_add_user": "def456",
+        },
+        current_checksums={
+            "0001_initial": "abc123",
+            "0002_add_user": "def456",
+            "0003_new": "zzz999",
+        },
+    )
+
+
+def test_validate_applied_migration_checksums_raises_on_missing_file():
+    """Applied migrations missing on disk should fail fast."""
+    with pytest.raises(InvalidMigrationError, match="missing from disk"):
+        validate_applied_migration_checksums(
+            applied_checksums={"0001_initial": "abc123"},
+            current_checksums={},
+        )
+
+
+def test_validate_applied_migration_checksums_raises_on_mismatch():
+    """Applied migrations with edited files should fail fast."""
+    with pytest.raises(InvalidMigrationError, match="Checksum mismatch"):
+        validate_applied_migration_checksums(
+            applied_checksums={"0001_initial": "abc123"},
+            current_checksums={"0001_initial": "changed"},
+        )
 
 
 class _Recorder:

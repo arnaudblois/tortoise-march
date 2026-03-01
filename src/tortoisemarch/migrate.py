@@ -1,6 +1,7 @@
 """Apply unapplied migrations, or render their SQL, for TortoiseMarch."""
 
 from contextlib import asynccontextmanager
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,38 @@ def resolve_target_name(target: str, all_names: list[str]) -> str:
 def _prefixed_name(label: str | None, stem: str) -> str:
     """Return a recorder name prefixed with the include label."""
     return f"{label}:{stem}" if label else stem
+
+
+def migration_checksum(path: Path) -> str:
+    """Return the sha256 checksum for a migration file.
+
+    We hash raw bytes so we detect any content edit. This keeps migration
+    history immutable once a migration has been recorded as applied.
+    """
+    return sha256(path.read_bytes()).hexdigest()
+
+
+def validate_applied_migration_checksums(
+    applied_checksums: dict[str, str],
+    current_checksums: dict[str, str],
+) -> None:
+    """Ensure applied migrations still exist and match on-disk checksums."""
+    for name, recorded_checksum in applied_checksums.items():
+        current_checksum = current_checksums.get(name)
+        if current_checksum is None:
+            msg = (
+                f"Applied migration '{name}' is missing from disk.\n"
+                "We treat applied migrations as immutable history, so we cannot "
+                "continue safely."
+            )
+            raise InvalidMigrationError(msg)
+        if current_checksum != recorded_checksum:
+            msg = (
+                f"Checksum mismatch for applied migration '{name}'.\n"
+                "The file was modified after being applied. "
+                "Create a new migration instead of editing applied history."
+            )
+            raise InvalidMigrationError(msg)
 
 
 def plan_route(
@@ -133,7 +166,8 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
             schema_editor = PostgresSchemaEditor()
 
             await MigrationRecorder.ensure_table()
-            applied = set(await MigrationRecorder.list_applied())
+            applied_checksums = await MigrationRecorder.list_applied_with_checksums()
+            applied = set(applied_checksums)
 
             sources: list[tuple[str | None, Path]] = [
                 (entry["label"], entry["path"]) for entry in include_locations
@@ -153,6 +187,11 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
                     all_names.append(name)
                     name_to_file[name] = file
                     name_to_label[name] = label
+
+            current_checksums = {
+                name: migration_checksum(file) for name, file in name_to_file.items()
+            }
+            validate_applied_migration_checksums(applied_checksums, current_checksums)
             target_name = None
             if target:
                 target_name = resolve_target_name(target, all_names)
@@ -188,7 +227,10 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
                         raise InvalidMigrationError(msg)
 
                     if fake:
-                        await MigrationRecorder.record_applied(name)
+                        await MigrationRecorder.record_applied(
+                            name,
+                            current_checksums[name],
+                        )
                         click.echo(f"⚡️ Marked {name} as applied (fake)")
                         continue
 
@@ -206,7 +248,10 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
                     async with conn._in_transaction():  # noqa: SLF001
                         tx = Tortoise.get_connection("default")
                         await Migration.apply(tx, schema_editor)
-                        await MigrationRecorder.record_applied(name)
+                        await MigrationRecorder.record_applied(
+                            name,
+                            current_checksums[name],
+                        )
                     click.echo(f"✅ Migration {name} applied")
             else:
                 for name in names:

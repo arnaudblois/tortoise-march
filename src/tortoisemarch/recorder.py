@@ -52,6 +52,7 @@ class MigrationRecorder:
         Schema:
             id          BIGSERIAL PRIMARY KEY
             name        TEXT NOT NULL UNIQUE      -- e.g. '0001_initial'
+            checksum    TEXT NOT NULL             -- sha256 of file bytes
             applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
         """
         conn = Tortoise.get_connection("default")
@@ -61,6 +62,7 @@ class MigrationRecorder:
             CREATE TABLE IF NOT EXISTS {table} (
                 id BIGSERIAL PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
+                checksum TEXT NOT NULL,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """,
@@ -83,17 +85,27 @@ class MigrationRecorder:
         return [row["name"] for row in rows]
 
     @classmethod
-    async def record_applied(cls, name: str) -> None:
-        """Insert a migration name into the registry (idempotent)."""
+    async def list_applied_with_checksums(cls) -> dict[str, str]:
+        """Return applied migration checksums keyed by migration name."""
+        conn = Tortoise.get_connection("default")
+        table = _quote_identifier(cls.TABLE_NAME)
+        rows = await conn.execute_query_dict(
+            f"SELECT name, checksum FROM {table} ORDER BY applied_at, id;",  # noqa:S608
+        )
+        return {row["name"]: row["checksum"] for row in rows}
+
+    @classmethod
+    async def record_applied(cls, name: str, checksum: str) -> None:
+        """Insert a migration name/checksum into the registry (idempotent)."""
         conn = Tortoise.get_connection("default")
         table = _quote_identifier(cls.TABLE_NAME)
         await conn.execute_query(
             f"""
-            INSERT INTO {table} (name)
-            VALUES ($1)
+            INSERT INTO {table} (name, checksum)
+            VALUES ($1, $2)
             ON CONFLICT (name) DO NOTHING;
             """,  # noqa:S608
-            [name],
+            [name, checksum],
         )
 
     @classmethod

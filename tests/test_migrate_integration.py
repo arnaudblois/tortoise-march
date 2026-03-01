@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from tortoise import Tortoise
 
+from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.makemigrations import makemigrations
 from tortoisemarch.migrate import migrate, tortoise_context
 from tortoisemarch.recorder import MigrationRecorder
@@ -608,5 +609,70 @@ async def test_migrate_to_target_forward_and_backward(tmp_path: Path):  # noqa: 
             "SELECT name FROM tortoisemarch_applied_migrations ORDER BY name;",
         )
         assert [r["name"] for r in recorder_rows] == ["0001_initial", "0002_add_bar"]
+
+    sys.path.remove(str(tmp_path))
+
+
+async def test_migrate_raises_if_applied_file_is_modified(tmp_path: Path):
+    """Migrate should fail when an applied migration file is edited."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").touch()
+
+    placeholder = tmp_path / "placeholder_models.py"
+    placeholder.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import models
+
+
+            class Placeholder(models.Model):
+                class Meta:
+                    table = "__placeholder__"
+            """,
+        ),
+    )
+    sys.path.insert(0, str(tmp_path))
+
+    migration_path = migrations_dir / "0001_initial.py"
+    migration_path.write_text(
+        textwrap.dedent(
+            """
+            from typing import ClassVar
+            from tortoisemarch.base import BaseMigration
+            from tortoisemarch.operations import CreateModel
+
+
+            class Migration(BaseMigration):
+                operations: ClassVar[list] = [
+                    CreateModel(
+                        name="Foo",
+                        db_table="foo",
+                        fields=[
+                            ("id", "IntField", {"primary_key": True}),
+                        ],
+                    ),
+                ]
+            """,
+        ),
+    )
+
+    conf = {
+        "connections": {"default": "postgres://postgres:test@localhost:5445/testdb"},
+        "apps": {
+            "models": {
+                "models": ["placeholder_models"],
+                "default_connection": "default",
+            },
+        },
+    }
+
+    await migrate(tortoise_conf=conf, location=migrations_dir)
+
+    # We append a harmless comment to simulate history edits after apply.
+    migration_path.write_text(f"{migration_path.read_text()}\n# edited after apply\n")
+
+    with pytest.raises(InvalidMigrationError, match="Checksum mismatch"):
+        await migrate(tortoise_conf=conf, location=migrations_dir)
 
     sys.path.remove(str(tmp_path))

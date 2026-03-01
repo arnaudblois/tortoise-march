@@ -116,6 +116,12 @@ This applies any new migration files to your database.
 - `--sql` previews the SQL (forward or backward) without executing.
 - `--fake` updates the migration recorder without running SQL (useful if you applied changes manually).
 
+Migration safety:
+
+- We store a SHA-256 checksum for each applied migration file.
+- We fail fast if an applied migration file is missing or has been modified.
+- We treat applied migrations as immutable history. To change behavior, add a new migration.
+
 ---
 
 ## Project Layout
