@@ -58,6 +58,18 @@ def test_plan_route_forward_backward_and_noop():
     assert direction == "noop"
     assert names == []
 
+    # Default mode should apply all remaining migrations in order.
+    direction, names = plan_route({"0001_initial"}, all_names, None)
+    assert direction == "forward"
+    assert names == ["0002", "0003"]
+
+
+def test_plan_route_rejects_gapped_applied_history():
+    """Gapped recorder history should fail fast instead of skipping migrations."""
+    all_names = ["0001_initial", "0002", "0003"]
+    with pytest.raises(InvalidMigrationError, match="contains gaps"):
+        plan_route({"0001_initial", "0003"}, all_names, None)
+
 
 def test_validate_applied_migration_checksums_accepts_exact_match():
     """Checksum validation should pass when every applied migration matches."""

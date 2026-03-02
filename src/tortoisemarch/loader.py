@@ -53,7 +53,7 @@ def import_module_from_path(file_path: Path, module_name: str) -> ModuleType:
     except Exception as exc:
         msg = (
             f"Error importing migration module '{module_name}' "
-            "from '{file_path}': {exc}"
+            f"from '{file_path}': {exc}"
         )
         raise DiscoveryError(msg) from exc
     return module

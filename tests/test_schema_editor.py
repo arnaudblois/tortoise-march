@@ -284,6 +284,7 @@ def test_db_default_expr_is_unquoted_python_callable_is_not_emitted():
         ("created_at", "DatetimeField", {"default": "db_default:now()"}),
         ("id", "UUIDField", {"primary_key": True, "default": "python_callable"}),
         ("label", "CharField", {"max_length": 10, "default": "hi"}),
+        ("publisher", "CharField", {"max_length": 50, "default": "O'Reilly"}),
         ("flag", "BooleanField", {"default": True}),
     ]
 
@@ -295,6 +296,7 @@ def test_db_default_expr_is_unquoted_python_callable_is_not_emitted():
     assert "DEFAULT" not in frag
     # string literal should be quoted
     assert "DEFAULT 'hi'" in sql
+    assert "DEFAULT 'O''Reilly'" in sql
     assert "DEFAULT TRUE" in sql
 
 

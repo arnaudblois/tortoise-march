@@ -217,6 +217,15 @@ class PostgresSchemaEditor(SchemaEditor):
         """Return a safely quoted identifier for Postgres."""
         return f'"{name}"'
 
+    @staticmethod
+    def _sql_string_literal(value: str) -> str:
+        """Return a SQL string literal with embedded single quotes escaped.
+
+        We use SQL-standard quote doubling instead of Python repr() because SQL
+        string literals must always be single-quoted in generated migrations.
+        """
+        return "'" + value.replace("'", "''") + "'"
+
     def _render_default_sql(self, default: Any) -> str | None:
         """Render a Python default value to a PostgreSQL literal, if possible."""
         if isinstance(default, Enum):
@@ -232,7 +241,7 @@ class PostgresSchemaEditor(SchemaEditor):
         if isinstance(default, (int, float)):
             return str(default)
         if isinstance(default, str):
-            return repr(default)  # quoted string literal
+            return self._sql_string_literal(default)
         msg = f"Unsupported default literal: {default!r}"
         raise TypeError(msg)
 

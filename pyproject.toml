@@ -1,22 +1,26 @@
-[tool.poetry]
+[project]
 name = "tortoise-march"
 version = "0.1.0"
 description = "A Django-style migration system for Tortoise ORM"
-authors = ["Arnaud Blois <hi@arnaudblois.com>"]
+authors = [{ name = "Arnaud Blois", email = "opensource@arnaudblois.com" }]
 license = "MIT"
 readme = "README.md"
-packages = [{ include = "tortoisemarch", from = "src" }]
-homepage = "https://github.com/arnaudblois/tortoise-march"
-repository = "https://github.com/arnaudblois/tortoise-march"
+requires-python = ">=3.12"
+dependencies = [
+    "tortoise-orm>=1.1.2,<2.0.0",
+    "asyncpg>=0.31.0",
+    "black>=26.1.0",
+]
 
-[tool.poetry.scripts]
+[project.urls]
+Homepage = "https://github.com/arnaudblois/tortoise-march"
+Repository = "https://github.com/arnaudblois/tortoise-march"
+
+[project.scripts]
 tortoisemarch = "tortoisemarch.cli:main"
 
-[tool.poetry.dependencies]
-python = ">=3.12"
-tortoise-orm = "^1.1.2"
-asyncpg = "^0.31.0"
-black = "^26.1.0"
+[tool.poetry]
+packages = [{ include = "tortoisemarch", from = "src" }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.1"
@@ -24,13 +28,9 @@ pytest-asyncio = "^1.1.0"
 ruff = "^0.15.2"
 isort = "^8.0.0"
 pre-commit = "^4.2.0"
-sphinx-autodoc2 = "^0.5.0"
-myst-parser = "^5.0.0"
-furo = "^2025.7.19"
 ipython = "^9.4.0"
 mkdocs = "^1.6.1"
 mkdocs-material = "^9.6.19"
-mkdocstrings = {extras = ["python"], version = "^1.0.0"}
 mkdocs-autorefs = "^1.4.3"
 mkdocs-include-markdown-plugin = "^7.1.7"
 syrupy = "^5.0.0"

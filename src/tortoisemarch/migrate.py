@@ -100,12 +100,14 @@ def plan_route(
     target_name: str | None,
 ) -> tuple[str, list[str]]:
     """Compute direction and list of migrations to apply/unapply."""
+    current_idx = _current_applied_index(applied, all_names)
+
     if target_name is None:
-        pending = [n for n in all_names if n not in applied]
+        pending = all_names[current_idx + 1 :]
+        if not pending:
+            return ("noop", [])
         return ("forward", pending)
 
-    applied_order = [n for n in all_names if n in applied]
-    current_idx = len(applied_order) - 1  # -1 when none applied
     target_idx = all_names.index(target_name)
 
     if target_idx == current_idx:
@@ -116,6 +118,36 @@ def plan_route(
 
     # backward
     return ("backward", list(reversed(all_names[target_idx + 1 : current_idx + 1])))
+
+
+def _current_applied_index(applied: set[str], all_names: list[str]) -> int:
+    """Return the index of the last contiguous applied migration.
+
+    Migration application is strictly ordered. If we find a missing migration
+    followed by later applied migrations, recorder history is inconsistent and
+    we fail fast instead of silently skipping work.
+    """
+    current_idx = -1
+    for idx, name in enumerate(all_names):
+        if name in applied:
+            current_idx = idx
+            continue
+
+        later_applied = [n for n in all_names[idx + 1 :] if n in applied]
+        if later_applied:
+            msg = (
+                "Applied migration history contains gaps.\n"
+                f"Missing migration: {name}\n"
+                "Later migrations recorded as applied: "
+                + ", ".join(later_applied)
+                + "\n"
+                "Repair recorder history so applied migrations are a contiguous "
+                "prefix before running migrate."
+            )
+            raise InvalidMigrationError(msg)
+        break
+
+    return current_idx
 
 
 async def migrate(  # noqa: C901, PLR0912, PLR0915
@@ -192,22 +224,15 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
                 name: migration_checksum(file) for name, file in name_to_file.items()
             }
             validate_applied_migration_checksums(applied_checksums, current_checksums)
-            target_name = None
-            if target:
-                target_name = resolve_target_name(target, all_names)
-            else:
-                # default: apply all pending
-                pending = [n for n in all_names if n not in applied]
-                target_name = pending[-1] if pending else None
-
-            if target_name is None:
-                click.echo("✅ No pending migrations.")
-                return "" if sql else None
+            target_name = resolve_target_name(target, all_names) if target else None
 
             direction, names = plan_route(applied, all_names, target_name)
 
             if direction == "noop":
-                click.echo(f"✅ Already at migration {target_name}")
+                if target_name is None:
+                    click.echo("✅ No pending migrations.")
+                else:
+                    click.echo(f"✅ Already at migration {target_name}")
                 return "" if sql else None
 
             if direction == "forward":

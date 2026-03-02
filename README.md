@@ -135,7 +135,7 @@ src/
 │   ├── operations.py
 │   ├── writer.py
 │   ├── makemigrations.py
-│   ├── runner.py
+│   ├── migrate.py
 │   └── migrations/
 │       ├── 0001_initial.py
 │       └── ...
@@ -153,9 +153,36 @@ Tests include both unit-level operations and real database integration using asy
 
 ---
 
+## Release Process
+
+PyPI publishing is automated via GitHub Actions.
+
+1. Update the package version in `pyproject.toml` (for example `0.1.0`).
+2. Merge that version change to `main`.
+3. Create and push a tag for the same version:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+4. In GitHub, create a Release from that tag and click **Publish release**.
+
+Publishing happens on the `release.published` event (not on tag push alone).
+The workflow verifies that the release tag matches the package version in
+`pyproject.toml` (both `0.1.0` and `v0.1.0` are accepted).
+
+---
+
 ## Documentation
 
-Documentation will be available soon. You can also generate it locally using Sphinx, autodoc2, and MyST.
+Published docs: https://arnaudblois.github.io/tortoise-march/
+
+Build and serve locally:
+
+```bash
+poetry run mkdocs serve
+```
 
 ---
 

@@ -108,10 +108,12 @@ jobs:
           python-version: "3.13"
           with-groups: "dev"
 
-      - name: Set constant dev version for TestPyPI
+      - name: Set unique dev version for TestPyPI
         run: |
           BASE_VERSION=$(poetry version -s | sed 's/\.dev.*//')
-          poetry version "${BASE_VERSION}.dev0"
+          # We publish a unique dev build per run so every main push can be
+          # uploaded to TestPyPI without colliding on version numbers.
+          poetry version "${BASE_VERSION}.dev${GITHUB_RUN_ID}${GITHUB_RUN_ATTEMPT}"
 
       - name: Build wheel/sdist
         run: poetry build
@@ -141,6 +143,18 @@ jobs:
         with:
           python-version: "3.13"
           with-groups: "dev"
+
+      - name: Verify release tag matches package version
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          PKG_VERSION=$(poetry version -s)
+          if [ "$TAG_NAME" = "$PKG_VERSION" ] || [ "$TAG_NAME" = "v$PKG_VERSION" ]; then
+            echo "Release tag ($TAG_NAME) matches package version ($PKG_VERSION)."
+          else
+            echo "Release tag ($TAG_NAME) does not match package version ($PKG_VERSION)." >&2
+            exit 1
+          fi
 
       - name: Build wheel/sdist
         run: poetry build

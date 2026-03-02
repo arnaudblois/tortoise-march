@@ -130,7 +130,7 @@ src/
     ├── operations.py
     ├── writer.py
     ├── makemigrations.py
-    ├── runner.py
+    ├── migrate.py
     └── migrations/
         ├── 0001_initial.py
         └── ...
@@ -145,6 +145,27 @@ poetry run pytest
 ```
 
 Includes unit tests for operations and integration tests against Postgres.
+
+---
+
+## Release process
+
+PyPI publishing is automated via GitHub Actions.
+
+1. Update the package version in `pyproject.toml` (for example `0.1.0`).
+2. Merge that version change to `main`.
+3. Create and push a tag for the same version:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+4. In GitHub, create a Release from that tag and click **Publish release**.
+
+Publishing happens on the `release.published` event (not on tag push alone).
+The workflow verifies that the release tag matches the package version in
+`pyproject.toml` (both `0.1.0` and `v0.1.0` are accepted).
 
 ---
 

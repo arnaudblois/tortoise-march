@@ -11,7 +11,7 @@ Subcommands
 
 Configured as a console script via:
 
-    [tool.poetry.scripts]
+    [project.scripts]
     tortoisemarch = "tortoisemarch.cli:main"
 
 So users can run `poetry run tortoisemarch ...` (or just `tortoisemarch`
