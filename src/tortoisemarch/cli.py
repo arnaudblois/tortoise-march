@@ -89,7 +89,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Apply migrations found in the migrations directory. Use --sql to "
             "print SQL without executing, or --fake to record as applied without "
-            "running the operations."
+            "running the operations. "
+            "Use --rewrite-history only in local development."
         ),
     )
     mig.add_argument(
@@ -115,6 +116,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--location",
         type=Path,
         help="Override the migrations directory (otherwise read from pyproject).",
+    )
+    mig.add_argument(
+        "--rewrite-history",
+        action="store_true",
+        help=(
+            "Development only: reset recorder history and rebuild it from "
+            "current migration files. Requires --fake."
+        ),
     )
     return parser
 
@@ -169,6 +178,7 @@ def main() -> None:
                     sql=args.sql,
                     fake=args.fake,
                     target=args.target,
+                    rewrite_history=args.rewrite_history,
                 ),
             )
         else:

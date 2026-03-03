@@ -14,5 +14,6 @@ Initial public release.
 - Included migration locations with namespaced recorder entries.
 - Migration integrity checks using per-file SHA-256 checksums.
 - CLI support for forward/backward targets, SQL preview mode, and `--fake`.
+- Development-only `--rewrite-history` flag to reset and rebuild recorded migration history from current files.
 - Data migration scaffolding support through empty migration generation.
 - Postgres support with unit and integration test coverage.

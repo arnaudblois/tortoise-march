@@ -1,12 +1,14 @@
 """Unit-level checks for migrate planning/target resolution."""
 
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
 from tortoisemarch.base import BaseMigration
-from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.exceptions import ConfigError, InvalidMigrationError
 from tortoisemarch.migrate import (
+    migrate,
     plan_route,
     resolve_target_name,
     tortoise_context,
@@ -101,6 +103,17 @@ def test_validate_applied_migration_checksums_raises_on_mismatch():
         validate_applied_migration_checksums(
             applied_checksums={"0001_initial": "abc123"},
             current_checksums={"0001_initial": "changed"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_migrate_rewrite_history_requires_fake():
+    """History rewrite mode should require explicit fake-apply semantics."""
+    with pytest.raises(ConfigError, match="requires --fake"):
+        await migrate(
+            tortoise_conf={"connections": {"default": "sqlite://:memory:"}},
+            location=Path("migrations"),
+            rewrite_history=True,
         )
 
 

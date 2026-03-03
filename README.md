@@ -115,6 +115,7 @@ This applies any new migration files to your database.
 - `tortoisemarch migrate 0002` migrates forward or backward to reach that target (number or unique prefix).
 - `--sql` previews the SQL (forward or backward) without executing.
 - `--fake` updates the migration recorder without running SQL (useful if you applied changes manually).
+- `--rewrite-history` resets recorder history and rebuilds it from current migration files (development-only, requires `--fake`).
 
 Migration safety:
 

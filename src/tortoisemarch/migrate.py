@@ -150,13 +150,14 @@ def _current_applied_index(applied: set[str], all_names: list[str]) -> int:
     return current_idx
 
 
-async def migrate(  # noqa: C901, PLR0912, PLR0915
+async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
     tortoise_conf: dict | None = None,
     location: Path | None = None,
     *,
     sql: bool = False,
     fake: bool = False,
     target: str | None = None,
+    rewrite_history: bool = False,
 ) -> str | None:
     """Apply all unapplied migrations in order.
 
@@ -166,6 +167,9 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
         sql: If True, print and return the SQL that would run (no execution).
         fake: If True, mark migrations as applied/unapplied without running them.
         target: Optional migration name/number to migrate to (forward/backward).
+        rewrite_history: If True, clear recorded migration history before
+            planning and then re-record from current files while faking. This is
+            intended for local development only.
 
     Returns:
         Concatenated SQL string when `sql=True`, otherwise `None`.
@@ -178,6 +182,9 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
     """
     if sql and fake:
         msg = "Options --sql and --fake are mutually exclusive."
+        raise ConfigError(msg)
+    if rewrite_history and not fake:
+        msg = "Option --rewrite-history requires --fake."
         raise ConfigError(msg)
 
     # Resolve config and migrations location
@@ -223,7 +230,21 @@ async def migrate(  # noqa: C901, PLR0912, PLR0915
             current_checksums = {
                 name: migration_checksum(file) for name, file in name_to_file.items()
             }
-            validate_applied_migration_checksums(applied_checksums, current_checksums)
+            if rewrite_history:
+                click.secho(
+                    "⚠️  Rewriting migration recorder history "
+                    "(--rewrite-history). "
+                    "Use this only in development.",
+                    fg="yellow",
+                )
+                await MigrationRecorder.clear_all()
+                applied_checksums = {}
+                applied = set()
+            else:
+                validate_applied_migration_checksums(
+                    applied_checksums,
+                    current_checksums,
+                )
             target_name = resolve_target_name(target, all_names) if target else None
 
             direction, names = plan_route(applied, all_names, target_name)

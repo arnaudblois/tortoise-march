@@ -119,6 +119,15 @@ class MigrationRecorder:
         )
 
     @classmethod
+    async def clear_all(cls) -> None:
+        """Remove all migration rows from the registry."""
+        conn = Tortoise.get_connection("default")
+        table = _quote_identifier(cls.TABLE_NAME)
+        await conn.execute_query(
+            f"DELETE FROM {table};",  # noqa:S608
+        )
+
+    @classmethod
     async def is_applied(cls, name: str) -> bool:
         """Return True if the given migration name exists in the registry."""
         conn = Tortoise.get_connection("default")
