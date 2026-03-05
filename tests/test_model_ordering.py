@@ -17,6 +17,37 @@ def _ps(*models: ModelState) -> ProjectState:
     return ProjectState(model_states={m.name: m for m in models})
 
 
+def _pk() -> FieldState:
+    """Return a minimal integer primary key field."""
+    return FieldState(name="id", field_type="IntField", primary_key=True)
+
+
+def _fk(name: str, related_table: str) -> FieldState:
+    """Return a nullable FK field pointing at `related_table`."""
+    return FieldState(
+        name=name,
+        field_type="ForeignKeyFieldInstance",
+        null=True,
+        related_table=related_table,
+        to_field="id",
+        on_delete="CASCADE",
+    )
+
+
+def _model(
+    name: str,
+    table: str,
+    *,
+    fk_name: str | None = None,
+    fk_table: str | None = None,
+) -> ModelState:
+    """Build a model with an `id` PK and an optional FK field."""
+    fields = {"id": _pk()}
+    if fk_name and fk_table:
+        fields[fk_name.lower()] = _fk(fk_name, fk_table)
+    return ModelState(name=name, db_table=table, field_states=fields)
+
+
 def test_create_model_ordering_respects_fk_dependencies():
     """Test that parent tables are created before tables that reference them."""
     parent = ModelState(
@@ -219,6 +250,29 @@ def test_create_model_cycle_detection():
             ProjectState(model_states={}),
             ProjectState(model_states={"A": a, "B": b}),
         )
+
+
+def test_create_model_cycle_message_includes_exact_path_and_blocked_models():
+    """Cycle errors should expose witness model paths, fields, and blocked models."""
+    to_state = ProjectState(
+        model_states={
+            "TableA": _model("TableA", "table_a", fk_name="b_ref", fk_table="table_b"),
+            "TableB": _model("TableB", "table_b", fk_name="c_ref", fk_table="table_c"),
+            "TableC": _model("TableC", "table_c", fk_name="a_ref", fk_table="table_a"),
+            "TableD": _model("TableD", "table_d", fk_name="c_ref", fk_table="table_c"),
+        },
+    )
+
+    with pytest.raises(InvalidMigrationError) as excinfo:
+        diff_states(ProjectState(model_states={}), to_state)
+
+    msg = str(excinfo.value)
+    assert "CreateModel dependency cycle detected (1 cycle)." in msg
+    assert "Cycle 1 (models): TableA -> TableB -> TableC -> TableA" in msg
+    assert (
+        "Cycle 1 (fields): TableA.b_ref -> TableB.c_ref -> TableC.a_ref -> TableA"
+    ) in msg
+    assert "Blocked models (depend on cycles): TableD" in msg
 
 
 def test_create_model_allows_self_referential_fk():

@@ -18,6 +18,8 @@ Rules:
   so the SchemaEditor can perform rename + alter in one logical step.
 """
 
+from collections import defaultdict
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import Enum
 
@@ -39,6 +41,18 @@ from tortoisemarch.operations import (
 from tortoisemarch.schema_filtering import FK_TYPES, is_schema_field_type
 
 # ----------------------------- helpers ---------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FKDependencyEdge:
+    """Represent one FK dependency edge used in cycle diagnostics."""
+
+    src_model: str
+    src_table: str
+    src_field: str
+    dst_model: str
+    dst_table: str
+    field_type: str
 
 
 def _options_with_type(fs) -> dict:
@@ -317,23 +331,155 @@ def score_candidate(old_name: str, old_fs, new_name: str, new_fs) -> float:
     return score
 
 
-def _build_fk_dependencies(model_states: dict[str, ModelState]) -> dict[str, set[str]]:
-    """Build a dependency map for CreateModel ordering based on FK references."""
+def _build_fk_dependency_graph(
+    model_states: dict[str, ModelState],
+) -> tuple[dict[str, set[str]], dict[tuple[str, str], list[FKDependencyEdge]]]:
+    """Build FK dependencies and edge metadata used for cycle diagnostics."""
     table_to_model = {ms.db_table.lower(): name for name, ms in model_states.items()}
 
     deps: dict[str, set[str]] = {name: set() for name in model_states}
-    for name, ms in model_states.items():
-        for fs in ms.field_states.values():
-            if fs.field_type not in FK_TYPES:
+    edges_by_pair: dict[tuple[str, str], list[FKDependencyEdge]] = defaultdict(list)
+
+    for src_model, ms in model_states.items():
+        for field_state in ms.field_states.values():
+            if field_state.field_type not in FK_TYPES:
                 continue
-            rt = (fs.options.get("related_table") or "").lower()
-            if rt not in table_to_model:
+            related_table = (field_state.options.get("related_table") or "").lower()
+            if related_table not in table_to_model:
                 continue
-            target = table_to_model[rt]
-            if target == name:
+            dst_model = table_to_model[related_table]
+            if dst_model == src_model:
+                # We keep self-FK edges out of ordering so self-referential
+                # models remain creatable in a single CreateModel operation.
                 continue
-            deps[name].add(target)
-    return deps
+            deps[src_model].add(dst_model)
+            edges_by_pair[(src_model, dst_model)].append(
+                FKDependencyEdge(
+                    src_model=src_model,
+                    src_table=ms.db_table,
+                    src_field=field_state.name,
+                    dst_model=dst_model,
+                    dst_table=model_states[dst_model].db_table,
+                    field_type=field_state.field_type,
+                ),
+            )
+
+    for edge_list in edges_by_pair.values():
+        edge_list.sort(key=lambda edge: (edge.src_field.casefold(), edge.field_type))
+
+    return deps, dict(edges_by_pair)
+
+
+def _strongly_connected_components(
+    deps: dict[str, set[str]],
+    nodes: set[str],
+) -> list[set[str]]:
+    """Return SCCs for `nodes` in stable order using Tarjan's algorithm."""
+    index = 0
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    indices: dict[str, int] = {}
+    lowlinks: dict[str, int] = {}
+    components: list[set[str]] = []
+
+    def strongconnect(node: str) -> None:
+        nonlocal index
+        indices[node] = index
+        lowlinks[node] = index
+        index += 1
+        stack.append(node)
+        on_stack.add(node)
+
+        for neighbor in sorted(deps.get(node, set()) & nodes, key=str.casefold):
+            if neighbor not in indices:
+                strongconnect(neighbor)
+                lowlinks[node] = min(lowlinks[node], lowlinks[neighbor])
+            elif neighbor in on_stack:
+                lowlinks[node] = min(lowlinks[node], indices[neighbor])
+
+        if lowlinks[node] != indices[node]:
+            return
+
+        component: set[str] = set()
+        while stack:
+            member = stack.pop()
+            on_stack.remove(member)
+            component.add(member)
+            if member == node:
+                break
+        components.append(component)
+
+    for node in sorted(nodes, key=str.casefold):
+        if node not in indices:
+            strongconnect(node)
+
+    components.sort(key=lambda component: min(component, key=str.casefold).casefold())
+    return components
+
+
+def _cycle_components(deps: dict[str, set[str]], nodes: set[str]) -> list[set[str]]:
+    """Return SCCs that represent real cycles."""
+    cycle_components: list[set[str]] = []
+    for component in _strongly_connected_components(deps, nodes):
+        if len(component) > 1:
+            cycle_components.append(component)
+            continue
+        model_name = next(iter(component))
+        if model_name in deps.get(model_name, set()):
+            cycle_components.append(component)
+    return cycle_components
+
+
+def _witness_cycle_for_component(
+    deps: dict[str, set[str]],
+    component: set[str],
+) -> list[str]:
+    """Build one deterministic witness cycle path for an SCC."""
+    start = min(component, key=str.casefold)
+    path: list[str] = [start]
+
+    def dfs(node: str) -> bool:
+        neighbors = sorted(deps.get(node, set()) & component, key=str.casefold)
+        for neighbor in neighbors:
+            if neighbor == start and len(path) > 1:
+                path.append(start)
+                return True
+            if neighbor in path:
+                continue
+            path.append(neighbor)
+            if dfs(neighbor):
+                return True
+            path.pop()
+        return False
+
+    if dfs(start):
+        return path
+
+    # We should not hit this fallback for SCCs, but we keep it as a stable
+    # guardrail to avoid raising a secondary internal error.
+    if start in deps.get(start, set()):
+        return [start, start]
+    return [start, start]
+
+
+def _witness_cycle_fields(
+    cycle_path: list[str],
+    edges_by_pair: dict[tuple[str, str], list[FKDependencyEdge]],
+) -> str:
+    """Render a cycle witness path using concrete FK field names."""
+    field_hops: list[str] = []
+    for index in range(len(cycle_path) - 1):
+        src_model = cycle_path[index]
+        dst_model = cycle_path[index + 1]
+        edges = edges_by_pair.get((src_model, dst_model), [])
+        if edges:
+            edge = edges[0]
+            field_hops.append(f"{edge.src_model}.{edge.src_field}")
+            continue
+        field_hops.append(src_model)
+
+    field_hops.append(cycle_path[-1])
+    return " -> ".join(field_hops)
 
 
 def _toposort_models_by_fk(model_states: dict[str, ModelState]) -> list[str]:
@@ -342,28 +488,56 @@ def _toposort_models_by_fk(model_states: dict[str, ModelState]) -> list[str]:
     Models are sorted so that tables referenced by foreign keys are created
     before the tables that depend on them. Cycles are detected and rejected.
     """
-    deps = _build_fk_dependencies(model_states)
+    deps, edges_by_pair = _build_fk_dependency_graph(model_states)
+    remaining_deps = {name: set(values) for name, values in deps.items()}
 
     # Kahn's algorithm for topological sorting
-    ready = sorted([n for n, ds in deps.items() if not ds])
+    ready = sorted([name for name, values in remaining_deps.items() if not values])
     out: list[str] = []
     while ready:
-        n = ready.pop(0)
-        out.append(n)
-        for m in list(deps.keys()):
-            if n in deps[m]:
-                deps[m].remove(n)
-                if not deps[m] and m not in out and m not in ready:
-                    ready.append(m)
+        model_name = ready.pop(0)
+        out.append(model_name)
+        for candidate in list(remaining_deps.keys()):
+            if model_name in remaining_deps[candidate]:
+                remaining_deps[candidate].remove(model_name)
+                if (
+                    not remaining_deps[candidate]
+                    and candidate not in out
+                    and candidate not in ready
+                ):
+                    ready.append(candidate)
                     ready.sort()
 
     if len(out) != len(model_states):
-        cycle = [n for n, ds in deps.items() if ds]
-        msg = (
-            f"Cycle detected in CreateModel dependencies: {cycle}. "
-            "Either break the cycle (store FK on one side only) or "
-            "implement a 2-phase FK add."
+        unresolved = {
+            model_name for model_name, values in remaining_deps.items() if values
+        }
+        components = _cycle_components(remaining_deps, unresolved)
+        cycles = [
+            _witness_cycle_for_component(remaining_deps, component)
+            for component in components
+        ]
+        cycle_nodes = {node for cycle in cycles for node in cycle[:-1]}
+        blocked_models = sorted(unresolved - cycle_nodes, key=str.casefold)
+
+        cycle_label = "cycle" if len(cycles) == 1 else "cycles"
+        lines = [
+            f"CreateModel dependency cycle detected ({len(cycles)} {cycle_label}).",
+        ]
+        for idx, cycle in enumerate(cycles, start=1):
+            lines.append(f"Cycle {idx} (models): {' -> '.join(cycle)}")
+            lines.append(
+                f"Cycle {idx} (fields): {_witness_cycle_fields(cycle, edges_by_pair)}",
+            )
+        if blocked_models:
+            lines.append(
+                f"Blocked models (depend on cycles): {', '.join(blocked_models)}",
+            )
+        lines.append(
+            "Either break the cycle (store FK on one side only) "
+            "or implement a 2-phase FK add.",
         )
+        msg = "\n".join(lines)
         raise InvalidMigrationError(msg)
 
     return out
