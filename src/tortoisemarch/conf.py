@@ -251,3 +251,30 @@ def load_config(pyproject_path: Path | None = None) -> dict[str, Any]:
         "include_locations": include_locations,
         "src_folder": src_folder,
     }
+
+
+def resolve_runtime_config(
+    *,
+    tortoise_conf: dict[str, Any] | None = None,
+    location: Path | str | None = None,
+) -> tuple[dict[str, Any], Path, list[dict[str, Any]]]:
+    """Merge explicit runtime overrides with project config defaults.
+
+    We resolve `tortoise_conf` and `location` independently so callers can
+    override either one without having to restate both. We only load project
+    config when at least one value is missing, which keeps fully explicit API
+    calls self-contained and avoids surprising include-directory behavior.
+    """
+    config: dict[str, Any] | None = None
+    include_locations: list[dict[str, Any]] = []
+
+    if tortoise_conf is None or location is None:
+        config = load_config()
+        include_locations = config.get("include_locations") or []
+
+    if tortoise_conf is None:
+        tortoise_conf = config["tortoise_orm"]
+    if location is None:
+        location = config["location"] or Path("migrations")
+
+    return tortoise_conf, Path(location), include_locations

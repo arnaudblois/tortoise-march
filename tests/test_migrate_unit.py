@@ -6,7 +6,13 @@ from typing import ClassVar
 import pytest
 
 from tortoisemarch.base import BaseMigration
-from tortoisemarch.exceptions import ConfigError, InvalidMigrationError
+from tortoisemarch.exceptions import (
+    ConfigError,
+    InvalidMigrationError,
+    MigrationConnectionError,
+    NotReversibleMigrationError,
+    TortoiseMarchError,
+)
 from tortoisemarch.migrate import (
     migrate,
     plan_route,
@@ -14,7 +20,16 @@ from tortoisemarch.migrate import (
     tortoise_context,
     validate_applied_migration_checksums,
 )
-from tortoisemarch.operations import AddField, AlterField, CreateModel, Operation
+from tortoisemarch.operations import (
+    AddField,
+    AlterField,
+    CreateModel,
+    Operation,
+    RemoveField,
+    RemoveIndex,
+    RemoveModel,
+    RunPython,
+)
 from tortoisemarch.schema_editor import PostgresSchemaEditor
 
 
@@ -106,6 +121,11 @@ def test_validate_applied_migration_checksums_raises_on_mismatch():
         )
 
 
+def test_migration_connection_error_inherits_library_base() -> None:
+    """We keep connection failures catchable via the library base class."""
+    assert issubclass(MigrationConnectionError, TortoiseMarchError)
+
+
 @pytest.mark.asyncio
 async def test_migrate_rewrite_history_requires_fake():
     """History rewrite mode should require explicit fake-apply semantics."""
@@ -115,6 +135,21 @@ async def test_migrate_rewrite_history_requires_fake():
             location=Path("migrations"),
             rewrite_history=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_irreversible_operations_raise_not_reversible_error():
+    """We raise the documented exception for irreversible operations."""
+    operations = [
+        RemoveModel(name="Foo", db_table="foo"),
+        RemoveField(model_name="Foo", db_table="foo", field_name="bar"),
+        RemoveIndex(model_name="Foo", db_table="foo", name="foo_bar_idx"),
+        RunPython(lambda: None),
+    ]
+
+    for operation in operations:
+        with pytest.raises(NotReversibleMigrationError):
+            await operation.unapply(None, None)
 
 
 class _Recorder:

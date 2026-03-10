@@ -23,7 +23,7 @@ import click
 from tortoise import Tortoise
 from tortoise.exceptions import ConfigurationError
 
-from tortoisemarch.conf import load_config
+from tortoisemarch.conf import resolve_runtime_config
 from tortoisemarch.differ import diff_states, score_candidate
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.extractor import extract_project_state
@@ -286,33 +286,6 @@ def _summarize_opts(opts: dict[str, Any]) -> str:
     )
 
 
-def _detect_conflicts(migrations_dir: Path) -> list[tuple[int, list[str]]]:
-    """Detect conflicting migration numbers (same NNNN across multiple files).
-
-    Returns:
-        A sorted list of (number, [filenames...]) for any conflicts found.
-        Non-numbered .py files are ignored by this check (but should not exist).
-
-    Example:
-        [(4, ['0004_add_author.py', '0004_legacy_fix.py'])]
-
-    """
-    buckets: dict[int, list[str]] = {}
-
-    for f in migrations_dir.glob("*.py"):
-        if f.name == "__init__.py":
-            continue
-        m = _MIGRATION_RE.match(f.name)
-        if not m:
-            # Ignore non-conforming files here; writer/loader validate names elsewhere
-            continue
-        n = int(m.group(1))
-        buckets.setdefault(n, []).append(f.name)
-
-    conflicts = [(n, names) for n, names in buckets.items() if len(names) > 1]
-    return sorted(conflicts, key=lambda t: t[0])
-
-
 def _choose_renames_interactive(  # noqa: C901
     from_state,
     to_state,
@@ -509,15 +482,6 @@ async def _init_tortoise_apps(tortoise_conf: dict[str, Any]) -> None:
         raise InvalidMigrationError(msg) from exc
 
 
-def _precheck_conflicts(migrations_dir: Path) -> None:
-    pre_conflicts = _detect_conflicts(migrations_dir=migrations_dir)
-    if not pre_conflicts:
-        return
-    lines = [f"  {num:04d}: {', '.join(names)}" for num, names in pre_conflicts]
-    msg = "Conflicting migration numbers detected:\n" + "\n".join(lines)
-    raise InvalidMigrationError(msg)
-
-
 def _handle_empty_migration(
     *,
     empty: bool,
@@ -625,12 +589,10 @@ async def makemigrations(
 
     """
     # 1) Resolve configuration
-    include_locations: list[dict[str, Any]] = []
-    if not (tortoise_conf and location):
-        config = load_config()
-        tortoise_conf = config["tortoise_orm"]
-        location = config["location"] or Path("migrations")
-        include_locations = config.get("include_locations") or []
+    tortoise_conf, location, include_locations = resolve_runtime_config(
+        tortoise_conf=tortoise_conf,
+        location=location,
+    )
     location = _prepare_migrations_dir(location)
     tortoise_conf = _tortoise_conf_for_introspection(conf=tortoise_conf)
 
@@ -638,10 +600,7 @@ async def makemigrations(
     await _init_tortoise_apps(tortoise_conf)
 
     try:
-        # 2) Pre-check for conflicts
-        _precheck_conflicts(migrations_dir=location)
-
-        # 3) Empty migration scaffold
+        # 2) Empty migration scaffold
         if _handle_empty_migration(
             empty=empty,
             check_only=check_only,
@@ -650,7 +609,7 @@ async def makemigrations(
         ):
             return
 
-        # 4) Compute operations by diffing old vs new state
+        # 3) Compute operations by diffing old vs new state
         old_state = load_migration_state(
             migration_dir=location,
             include_dirs=[(e["label"], e["path"]) for e in include_locations],
@@ -658,7 +617,7 @@ async def makemigrations(
         new_state = extract_project_state(apps=Tortoise.apps)
         operations = _build_operations(old_state, new_state, apps=Tortoise.apps)
 
-        # 5) Write or noop
+        # 4) Write or noop
         _write_or_check_operations(
             operations,
             check_only=check_only,

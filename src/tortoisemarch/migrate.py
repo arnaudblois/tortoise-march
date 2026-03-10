@@ -9,7 +9,7 @@ import asyncpg
 import click
 from tortoise import Tortoise
 
-from tortoisemarch.conf import load_config
+from tortoisemarch.conf import resolve_runtime_config
 from tortoisemarch.exceptions import (
     ConfigError,
     InvalidMigrationError,
@@ -187,15 +187,10 @@ async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
         msg = "Option --rewrite-history requires --fake."
         raise ConfigError(msg)
 
-    # Resolve config and migrations location
-    if not (tortoise_conf and location):
-        config = load_config()
-        tortoise_conf = config["tortoise_orm"]
-        location = config["location"] or Path("migrations")
-        include_locations = config.get("include_locations") or []
-    else:
-        include_locations = []
-    location = Path(location)
+    tortoise_conf, location, include_locations = resolve_runtime_config(
+        tortoise_conf=tortoise_conf,
+        location=location,
+    )
 
     sql_accum: list[str] = []
 

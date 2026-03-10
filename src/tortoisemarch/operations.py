@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from tortoisemarch.exceptions import NotReversibleMigrationError
 from tortoisemarch.model_state import FieldState, ModelState, ProjectState
 from tortoisemarch.schema_filtering import (
     _value_for_migration_code,
@@ -252,7 +253,7 @@ class RemoveModel(Operation):
         """Raise an exception as removing a model is irreversible."""
         _ = conn, schema_editor
         msg = "RemoveModel cannot be reversed"
-        raise RuntimeError(msg)
+        raise NotReversibleMigrationError(msg)
 
     async def to_sql(self, conn, schema_editor) -> list[str]:
         """Return SQL to drop the table."""
@@ -357,7 +358,7 @@ class RemoveField(Operation):
         """Raise an exception as this is irreversible."""
         _ = conn, schema_editor
         msg = "RemoveField cannot be reversed."
-        raise RuntimeError(msg)
+        raise NotReversibleMigrationError(msg)
 
     async def to_sql(self, conn, schema_editor) -> list[str]:
         """Return SQL to drop the column."""
@@ -676,7 +677,7 @@ class RemoveIndex(Operation):
         """Recreate the index."""
         if self.columns is None:
             msg = "Cannot recreate index without columns."
-            raise RuntimeError(msg)
+            raise NotReversibleMigrationError(msg)
         await schema_editor.create_index(
             conn,
             db_table=self.db_table,
@@ -772,7 +773,7 @@ class RunPython(Operation):
         """Run the reverse callable if provided, else refuse to reverse."""
         if self.reverse_func is None:
             msg = "RunPython operation has no reverse callable"
-            raise RuntimeError(msg)
+            raise NotReversibleMigrationError(msg)
 
         result = self._invoke_runpython_callable(
             self.reverse_func,

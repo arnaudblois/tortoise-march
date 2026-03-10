@@ -13,6 +13,7 @@ import black
 import click
 
 from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.loader import iter_migration_files
 
 
 def _safe_fragment(text: str) -> str:
@@ -110,12 +111,9 @@ def _parse_number(filename: str) -> int:
 
 def _next_number(migrations_dir: Path) -> int:
     """Compute the next migration number by scanning the directory."""
-    numbers: list[int] = []
-    for f in migrations_dir.glob("*.py"):
-        if f.name == "__init__.py":
-            continue
-        n = _parse_number(f.name)
-        numbers.append(n)
+    numbers = [
+        _parse_number(file.name) for file in iter_migration_files(migrations_dir)
+    ]
     return (max(numbers) + 1) if numbers else 1
 
 

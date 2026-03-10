@@ -9,6 +9,7 @@ __all__ = [
     "DiscoveryError",
     "InvalidMigrationError",
     "MigrationApplyError",
+    "MigrationConnectionError",
     "NotReversibleMigrationError",
     "RecorderError",
     "StateError",
@@ -63,5 +64,5 @@ class DiscoveryError(TortoiseMarchError):
     """Failed to discover or import models/migrations/modules."""
 
 
-class MigrationConnectionError(RuntimeError):
+class MigrationConnectionError(TortoiseMarchError):
     """Raised when the migration runner cannot connect to the database."""

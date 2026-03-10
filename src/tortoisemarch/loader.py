@@ -85,7 +85,8 @@ def iter_migration_files(migration_dir: Path) -> Iterable[Path]:
     """Yield migration files in numeric order, validating their names.
 
     Includes only files matching 'NNNN_*.py' (e.g. '0001_initial.py'), skipping
-    '__init__.py'. Raises if non-conforming .py files are present.
+    '__init__.py'. Raises if non-conforming .py files are present or if two
+    files reuse the same numeric prefix.
     """
     if not migration_dir.exists():
         msg = f"Migrations directory does not exist: {migration_dir}"
@@ -96,6 +97,7 @@ def iter_migration_files(migration_dir: Path) -> Iterable[Path]:
 
     numbered: list[tuple[int, Path]] = []
     invalid: list[Path] = []
+    files_by_number: dict[int, list[Path]] = {}
 
     for file in migration_dir.glob("*.py"):
         if file.name == "__init__.py":
@@ -106,6 +108,7 @@ def iter_migration_files(migration_dir: Path) -> Iterable[Path]:
             continue
         number = int(m.group(1))
         numbered.append((number, file))
+        files_by_number.setdefault(number, []).append(file)
 
     if invalid:
         bad = ", ".join(f.name for f in sorted(invalid))
@@ -113,6 +116,19 @@ def iter_migration_files(migration_dir: Path) -> Iterable[Path]:
             "Found non-conforming migration filenames. Expected 'NNNN_*.py'. "
             f"Offenders: {bad}"
         )
+        raise InvalidMigrationError(msg)
+
+    duplicates = {
+        number: sorted(files, key=lambda path: path.name.casefold())
+        for number, files in files_by_number.items()
+        if len(files) > 1
+    }
+    if duplicates:
+        lines = [
+            f"  {number:04d}: {', '.join(file.name for file in files)}"
+            for number, files in sorted(duplicates.items())
+        ]
+        msg = "Conflicting migration numbers detected:\n" + "\n".join(lines)
         raise InvalidMigrationError(msg)
 
     for _, path in sorted(numbered, key=lambda t: t[0]):
