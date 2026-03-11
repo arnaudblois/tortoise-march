@@ -22,20 +22,32 @@ from collections import defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import Enum
+from typing import Any
 
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.model_state import FieldState, ModelState, ProjectState
+from tortoisemarch.model_state import (
+    ConstraintKind,
+    ConstraintState,
+    FieldState,
+    IndexState,
+    ModelState,
+    ProjectState,
+)
 from tortoisemarch.operations import (
+    AddConstraint,
     AddField,
     AlterField,
     CreateIndex,
     CreateModel,
     Operation,
+    RemoveConstraint,
     RemoveField,
     RemoveIndex,
     RemoveModel,
+    RenameConstraint,
     RenameField,
     RenameModel,
+    constraint_db_name,
     default_index_name,
 )
 from tortoisemarch.schema_filtering import FK_TYPES, is_schema_field_type
@@ -197,24 +209,74 @@ def _model_rename_score(old_ms: ModelState, new_ms: ModelState) -> float:
     return min(score, 1.0)
 
 
-def _implicit_field_indexes(ms: ModelState) -> set[tuple[tuple[str, ...], bool]]:
+def _implicit_field_indexes(ms: ModelState) -> set[tuple[Any, ...]]:
     """Return indexes implicitly created by field-level index flags."""
-    implicit: set[tuple[tuple[str, ...], bool]] = set()
+    implicit: set[tuple[Any, ...]] = set()
     for fs in ms.field_states.values():
         opts = fs.options
         if opts.get("index") and not opts.get("unique") and not opts.get("primary_key"):
             cols = _physical_index_columns(ms, (fs.name,))
-            implicit.add((cols, False))
+            implicit.add(IndexState(columns=cols).semantic_key)
     return implicit
 
 
-def _model_indexes(ms: ModelState) -> set[tuple[tuple[str, ...], bool]]:
-    """Return a canonical set of (columns, unique) index definitions."""
-    meta = ms.meta or {}
-    indexes = set()
-    for cols, unique in meta.get("indexes", []):
-        indexes.add((_physical_index_columns(ms, tuple(cols)), bool(unique)))
-    return indexes - _implicit_field_indexes(ms)
+def _normalize_index_state(ms: ModelState, index: IndexState) -> IndexState:
+    """Return an IndexState using physical DB column names."""
+    return IndexState(
+        columns=_physical_index_columns(ms, tuple(index.columns)),
+        name=index.name,
+        unique=index.unique,
+        index_type=index.index_type,
+        extra=index.extra,
+    )
+
+
+def _model_indexes(ms: ModelState) -> list[IndexState]:
+    """Return canonical model-level indexes excluding implicit field indexes."""
+    implicit = _implicit_field_indexes(ms)
+    indexes = [_normalize_index_state(ms, index) for index in ms.indexes]
+    return [index for index in indexes if index.semantic_key not in implicit]
+
+
+def _normalize_constraint_state(
+    ms: ModelState,
+    constraint: ConstraintState,
+) -> ConstraintState:
+    """Return a ConstraintState using physical DB column names where needed."""
+    if constraint.kind == ConstraintKind.UNIQUE:
+        return ConstraintState(
+            kind=ConstraintKind.UNIQUE,
+            name=constraint.name,
+            columns=_physical_index_columns(ms, tuple(constraint.columns)),
+        )
+    if constraint.kind == ConstraintKind.EXCLUDE:
+        physical_columns = _physical_index_columns(
+            ms,
+            tuple(column for column, _ in constraint.expressions),
+        )
+        expressions = tuple(
+            (column, operator)
+            for column, (_, operator) in zip(
+                physical_columns,
+                constraint.expressions,
+                strict=True,
+            )
+        )
+        return ConstraintState(
+            kind=ConstraintKind.EXCLUDE,
+            name=constraint.name,
+            expressions=expressions,
+            index_type=constraint.index_type,
+            condition=constraint.condition,
+        )
+    return constraint
+
+
+def _model_constraints(ms: ModelState) -> list[ConstraintState]:
+    """Return canonical model-level constraints."""
+    return [
+        _normalize_constraint_state(ms, constraint) for constraint in ms.constraints
+    ]
 
 
 def _physical_index_columns(ms: ModelState, cols: tuple[str, ...]) -> tuple[str, ...]:
@@ -678,32 +740,108 @@ def _diff_model_indexes(
     new_model: ModelState,
 ) -> None:
     """Append index operations to transform old_model indexes -> new_model indexes."""
-    old_indexes = _model_indexes(old_model)
-    new_indexes = _model_indexes(new_model)
+    old_indexes = {index.semantic_key: index for index in _model_indexes(old_model)}
+    new_indexes = {index.semantic_key: index for index in _model_indexes(new_model)}
 
-    removed = old_indexes - new_indexes
-    added = new_indexes - old_indexes
+    removed = [
+        old_indexes[key] for key in sorted(old_indexes.keys() - new_indexes.keys())
+    ]
+    added = [
+        new_indexes[key] for key in sorted(new_indexes.keys() - old_indexes.keys())
+    ]
 
-    for cols, unique in sorted(added):
-        ops.append(
-            CreateIndex(
-                model_name=new_model.name,
-                db_table=new_model.db_table,
-                columns=cols,
-                unique=unique,
+    ops.extend(
+        CreateIndex(
+            model_name=new_model.name,
+            db_table=new_model.db_table,
+            columns=index.columns,
+            unique=index.unique,
+            name=index.name,
+        )
+        for index in added
+    )
+
+    ops.extend(
+        RemoveIndex(
+            model_name=old_model.name,
+            db_table=old_model.db_table,
+            name=(
+                index.name
+                or default_index_name(
+                    old_model.db_table,
+                    index.columns,
+                    unique=index.unique,
+                )
             ),
+            columns=index.columns,
+            unique=index.unique,
+        )
+        for index in removed
+    )
+
+
+def _diff_model_constraints(
+    ops: list[Operation],
+    *,
+    old_model: ModelState,
+    new_model: ModelState,
+    model_name: str,
+) -> None:
+    """Append constraint operations to transform old_model constraints -> new_model."""
+    old_groups: dict[tuple[Any, ...], list[ConstraintState]] = defaultdict(list)
+    new_groups: dict[tuple[Any, ...], list[ConstraintState]] = defaultdict(list)
+
+    for constraint in _model_constraints(old_model):
+        old_groups[constraint.semantic_key].append(constraint)
+    for constraint in _model_constraints(new_model):
+        new_groups[constraint.semantic_key].append(constraint)
+
+    for group in old_groups.values():
+        group.sort(key=lambda value: constraint_db_name(old_model.db_table, value))
+    for group in new_groups.values():
+        group.sort(key=lambda value: constraint_db_name(new_model.db_table, value))
+
+    all_keys = sorted(set(old_groups) | set(new_groups))
+    for key in all_keys:
+        old_group = old_groups.get(key, [])
+        new_group = new_groups.get(key, [])
+        shared = min(len(old_group), len(new_group))
+
+        for index in range(shared):
+            old_constraint = old_group[index]
+            new_constraint = new_group[index]
+            old_name = constraint_db_name(old_model.db_table, old_constraint)
+            new_name = constraint_db_name(new_model.db_table, new_constraint)
+            if old_name != new_name:
+                ops.append(
+                    RenameConstraint(
+                        model_name=model_name,
+                        db_table=new_model.db_table,
+                        old_name=old_name,
+                        new_name=new_name,
+                        old_constraint=old_constraint,
+                        new_constraint=new_constraint,
+                    ),
+                )
+
+        ops.extend(
+            RemoveConstraint(
+                model_name=model_name,
+                db_table=new_model.db_table,
+                constraint=constraint,
+                name=constraint_db_name(old_model.db_table, constraint),
+            )
+            for constraint in old_group[shared:]
         )
 
-    for cols, unique in sorted(removed):
-        name = default_index_name(old_model.db_table, cols, unique=unique)
-        ops.append(
-            RemoveIndex(
-                model_name=old_model.name,
-                db_table=old_model.db_table,
-                name=name,
-                columns=cols,
-                unique=unique,
-            ),
+        ops.extend(
+            AddConstraint(
+                model_name=model_name,
+                db_table=new_model.db_table,
+                constraint=constraint,
+                name=constraint_db_name(new_model.db_table, constraint),
+            )
+            for constraint in new_group[shared:]
         )
 
 
@@ -757,15 +895,35 @@ def diff_states(
     for name in ordered_added_names:
         new_model = added[name]
         ops.append(CreateModel.from_model_state(new_model))
-        for cols, unique in sorted(_model_indexes(new_model)):
-            ops.append(
-                CreateIndex(
-                    model_name=new_model.name,
-                    db_table=new_model.db_table,
-                    columns=cols,
-                    unique=unique,
+        ops.extend(
+            CreateIndex(
+                model_name=new_model.name,
+                db_table=new_model.db_table,
+                columns=index.columns,
+                unique=index.unique,
+                name=index.name,
+            )
+            for index in sorted(
+                _model_indexes(new_model),
+                key=lambda value: (
+                    value.columns,
+                    value.unique,
+                    value.name or "",
+                    value.index_type,
+                    value.extra,
                 ),
             )
+        )
+        _diff_model_constraints(
+            ops,
+            old_model=ModelState(
+                name=new_model.name,
+                db_table=new_model.db_table,
+                field_states={},
+            ),
+            new_model=new_model,
+            model_name=new_model.name,
+        )
 
     # ---- Models changed (same name in both)
     for model_name in sorted(from_models.keys() & to_models.keys()):
@@ -780,6 +938,12 @@ def diff_states(
             ops,
             old_model=from_models[model_name],
             new_model=to_models[model_name],
+        )
+        _diff_model_constraints(
+            ops,
+            old_model=from_models[model_name],
+            new_model=to_models[model_name],
+            model_name=model_name,
         )
 
     # ---- Renamed models may also have field changes
@@ -800,6 +964,12 @@ def diff_states(
             ops,
             old_model=old_model,
             new_model=new_model,
+        )
+        _diff_model_constraints(
+            ops,
+            old_model=old_model,
+            new_model=new_model,
+            model_name=new_name,
         )
 
     return ops

@@ -8,7 +8,7 @@ from tortoise.contrib.test import tortoise_test_context
 from tortoise.models import Model
 
 from tortoisemarch.extractor import extract_project_state
-from tortoisemarch.model_state import ProjectState
+from tortoisemarch.model_state import ConstraintState, IndexState, ProjectState
 
 
 class PrimaryKeyField(fields.UUIDField):
@@ -140,7 +140,7 @@ async def test_extract_project_state_multiple_apps(tmp_path):
 
 
 def test_extract_model_state_respects_indexes_and_unique_together(tmp_path):
-    """Test that indexes and unique_together are captured from Meta."""
+    """Test that indexes and unique_together are captured explicitly."""
     mod = tmp_path / "indexed_models.py"
     mod.write_text(
         textwrap.dedent(
@@ -165,9 +165,8 @@ def test_extract_model_state_respects_indexes_and_unique_together(tmp_path):
 
         state = extract_project_state(apps={"default": {"Indexed": Indexed}})
         ms = state.get_model("Indexed")
-        indexes = set(ms.meta.get("indexes", []))
-        assert (("a", "b"), False) in indexes
-        assert (("b", "c"), True) in indexes
+        assert ms.indexes == [IndexState(columns=("a", "b"))]
+        assert ms.constraints == [ConstraintState(kind="unique", columns=("b", "c"))]
     finally:
         sys.path.remove(str(tmp_path))
 
@@ -208,4 +207,123 @@ async def test_extract_one_to_one_always_sets_unique(tmp_path):
         assert profile.field_states["member"].unique is True
     finally:
         await Tortoise.close_connections()
+        sys.path.remove(str(tmp_path))
+
+
+def test_extract_model_state_reads_meta_constraints(tmp_path):
+    """Meta.constraints should become explicit model constraint state."""
+    mod = tmp_path / "constraint_models.py"
+    mod.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            class UniqueConstraint:
+                def __init__(self, *, fields, name=None):
+                    self.fields = fields
+                    self.name = name
+
+                def deconstruct(self):
+                    return (
+                        "tortoise.constraints.UniqueConstraint",
+                        [],
+                        {"fields": list(self.fields), "name": self.name},
+                    )
+
+            class CheckConstraint:
+                def __init__(self, *, check, name=None):
+                    self.check = check
+                    self.name = name
+
+                def deconstruct(self):
+                    return (
+                        "tortoise.constraints.CheckConstraint",
+                        [],
+                        {"check": self.check, "name": self.name},
+                    )
+
+            class Constrained(models.Model):
+                email = fields.CharField(max_length=255)
+                age = fields.IntField()
+
+                class Meta:
+                    constraints = (
+                        UniqueConstraint(
+                            fields=("email",),
+                            name="constrained_email_uniq",
+                        ),
+                        CheckConstraint(
+                            check="age >= 18",
+                            name="constrained_age_check",
+                        ),
+                    )
+            """,
+        ),
+    )
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        from constraint_models import Constrained  # noqa: PLC0415
+
+        state = extract_project_state(apps={"default": {"Constrained": Constrained}})
+        ms = state.get_model("Constrained")
+        assert ms.constraints == [
+            ConstraintState(
+                kind="unique",
+                name="constrained_email_uniq",
+                columns=("email",),
+            ),
+            ConstraintState(
+                kind="check",
+                name="constrained_age_check",
+                check="age >= 18",
+            ),
+        ]
+    finally:
+        sys.path.remove(str(tmp_path))
+
+
+def test_extract_model_state_reads_tortoisemarch_constraints(tmp_path):
+    """TortoiseMarch-only Meta constraints should become explicit state."""
+    mod = tmp_path / "exclusion_models.py"
+    mod.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            from tortoisemarch.constraints import ExclusionConstraint
+
+            class Booking(models.Model):
+                room = fields.IntField()
+                timespan = fields.CharField(max_length=255)
+
+                class Meta:
+                    tortoisemarch_constraints = (
+                        ExclusionConstraint(
+                            expressions=(("room", "="), ("timespan", "&&")),
+                            name="booking_room_timespan_excl",
+                            index_type="gist",
+                            condition="cancelled_at IS NULL",
+                        ),
+                    )
+            """,
+        ),
+    )
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        from exclusion_models import Booking  # noqa: PLC0415
+
+        state = extract_project_state(apps={"default": {"Booking": Booking}})
+        ms = state.get_model("Booking")
+        assert ms.constraints == [
+            ConstraintState(
+                kind="exclude",
+                name="booking_room_timespan_excl",
+                expressions=(("room", "="), ("timespan", "&&")),
+                index_type="gist",
+                condition="cancelled_at IS NULL",
+            ),
+        ]
+    finally:
         sys.path.remove(str(tmp_path))

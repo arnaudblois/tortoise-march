@@ -1,27 +1,45 @@
 """Test suite for diff_states."""
 
 from tortoisemarch.differ import diff_states
-from tortoisemarch.model_state import FieldState, ModelState, ProjectState
+from tortoisemarch.model_state import (
+    ConstraintState,
+    FieldState,
+    IndexState,
+    ModelState,
+    ProjectState,
+)
 from tortoisemarch.operations import (
+    AddConstraint,
     AddField,
     AlterField,
     CreateIndex,
     CreateModel,
+    RemoveConstraint,
     RemoveField,
     RemoveIndex,
     RemoveModel,
+    RenameConstraint,
     RenameModel,
 )
 
 
-def model(
+def model(  # noqa: PLR0913
     name: str,
     fields: list[tuple[str, str, dict]],
     *,
     db_table: str | None = None,
     meta: dict | None = None,
+    indexes: list[IndexState] | None = None,
+    constraints: list[ConstraintState] | None = None,
 ) -> ModelState:
     """Construct a ModelState from (name, type, options) tuples."""
+    indexes = list(indexes or [])
+    constraints = list(constraints or [])
+    for columns, unique in (meta or {}).get("indexes", []):
+        if unique:
+            constraints.append(ConstraintState(kind="unique", columns=tuple(columns)))
+        else:
+            indexes.append(IndexState(columns=tuple(columns)))
     return ModelState(
         name=name,
         db_table=db_table or name.lower(),
@@ -33,6 +51,8 @@ def model(
             )
             for fname, ftype, opts in fields
         },
+        indexes=indexes,
+        constraints=constraints,
         meta=meta or {},
     )
 
@@ -367,6 +387,237 @@ def test_meta_indexes_respect_db_column_override():
     create_idx = [op for op in ops if isinstance(op, CreateIndex)]
     assert create_idx
     assert create_idx[0].columns == ("p_id",)
+
+
+def test_unique_constraints_emit_add_remove_and_rename():
+    """Unique constraints should diff as first-class constraint operations."""
+    old = project(
+        {
+            "Member": model(
+                "Member",
+                [("email", "CharField", {"max_length": 255})],
+                constraints=[
+                    ConstraintState(
+                        kind="unique",
+                        name="member_email_old_uniq",
+                        columns=("email",),
+                    ),
+                ],
+            ),
+        },
+    )
+    new = project(
+        {
+            "Member": model(
+                "Member",
+                [
+                    ("email", "CharField", {"max_length": 255}),
+                    ("tenant", "CharField", {"max_length": 50}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="unique",
+                        name="member_email_new_uniq",
+                        columns=("email",),
+                    ),
+                    ConstraintState(
+                        kind="unique",
+                        name="member_email_tenant_uniq",
+                        columns=("email", "tenant"),
+                    ),
+                ],
+            ),
+        },
+    )
+
+    ops = diff_states(old, new)
+
+    renames = [op for op in ops if isinstance(op, RenameConstraint)]
+    assert len(renames) == 1
+    assert renames[0].old_name == "member_email_old_uniq"
+    assert renames[0].new_name == "member_email_new_uniq"
+
+    adds = [op for op in ops if isinstance(op, AddConstraint)]
+    assert len(adds) == 1
+    assert adds[0].constraint == ConstraintState(
+        kind="unique",
+        name="member_email_tenant_uniq",
+        columns=("email", "tenant"),
+    )
+
+    changed = project(
+        {
+            "Member": model(
+                "Member",
+                [
+                    ("email", "CharField", {"max_length": 255}),
+                    ("tenant", "CharField", {"max_length": 50}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="unique",
+                        name="member_email_new_uniq",
+                        columns=("email", "tenant"),
+                    ),
+                ],
+            ),
+        },
+    )
+    ops_changed = diff_states(new, changed)
+    assert any(isinstance(op, RemoveConstraint) for op in ops_changed)
+    assert any(isinstance(op, RenameConstraint) for op in ops_changed)
+
+
+def test_check_constraints_emit_add_remove_and_rename():
+    """Check constraints should diff semantically and detect pure renames."""
+    old = project(
+        {
+            "Invoice": model(
+                "Invoice",
+                [("total", "IntField", {})],
+                constraints=[
+                    ConstraintState(
+                        kind="check",
+                        name="invoice_total_positive_old",
+                        check="total >= 0",
+                    ),
+                ],
+            ),
+        },
+    )
+    new = project(
+        {
+            "Invoice": model(
+                "Invoice",
+                [("total", "IntField", {})],
+                constraints=[
+                    ConstraintState(
+                        kind="check",
+                        name="invoice_total_positive_new",
+                        check="total >= 0",
+                    ),
+                ],
+            ),
+        },
+    )
+
+    ops = diff_states(old, new)
+    assert len([op for op in ops if isinstance(op, RenameConstraint)]) == 1
+
+    changed = project(
+        {
+            "Invoice": model(
+                "Invoice",
+                [("total", "IntField", {})],
+                constraints=[
+                    ConstraintState(
+                        kind="check",
+                        name="invoice_total_positive_new",
+                        check="total > 0",
+                    ),
+                ],
+            ),
+        },
+    )
+    ops_changed = diff_states(new, changed)
+    assert any(isinstance(op, RemoveConstraint) for op in ops_changed)
+    assert any(isinstance(op, AddConstraint) for op in ops_changed)
+
+
+def test_exclusion_constraints_emit_add_remove_and_rename():
+    """Exclusion constraints should diff semantically and detect pure renames."""
+    old = project(
+        {
+            "Booking": model(
+                "Booking",
+                [
+                    ("room", "IntField", {}),
+                    ("timespan", "CharField", {"max_length": 255}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="exclude",
+                        name="booking_room_timespan_old_excl",
+                        expressions=(("room", "="), ("timespan", "&&")),
+                        index_type="gist",
+                        condition="cancelled_at IS NULL",
+                    ),
+                ],
+            ),
+        },
+    )
+    new = project(
+        {
+            "Booking": model(
+                "Booking",
+                [
+                    ("room", "IntField", {}),
+                    ("timespan", "CharField", {"max_length": 255}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="exclude",
+                        name="booking_room_timespan_new_excl",
+                        expressions=(("room", "="), ("timespan", "&&")),
+                        index_type="gist",
+                        condition="cancelled_at IS NULL",
+                    ),
+                ],
+            ),
+        },
+    )
+
+    ops = diff_states(old, new)
+    assert len([op for op in ops if isinstance(op, RenameConstraint)]) == 1
+
+    changed = project(
+        {
+            "Booking": model(
+                "Booking",
+                [
+                    ("room", "IntField", {}),
+                    ("timespan", "CharField", {"max_length": 255}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="exclude",
+                        name="booking_room_timespan_new_excl",
+                        expressions=(("room", "="), ("timespan", "-|-")),
+                        index_type="gist",
+                        condition="cancelled_at IS NULL",
+                    ),
+                ],
+            ),
+        },
+    )
+    ops_changed = diff_states(new, changed)
+    assert any(isinstance(op, RemoveConstraint) for op in ops_changed)
+    assert any(isinstance(op, AddConstraint) for op in ops_changed)
+
+
+def test_unique_together_becomes_constraint_not_unique_index():
+    """unique_together-style state should emit AddConstraint rather than CreateIndex."""
+    new = project(
+        {
+            "Book": model(
+                "Book",
+                [
+                    ("title", "CharField", {"max_length": 255}),
+                    ("edition", "IntField", {}),
+                ],
+                constraints=[
+                    ConstraintState(kind="unique", columns=("title", "edition")),
+                ],
+            ),
+        },
+    )
+
+    ops = diff_states(project({}), new)
+    assert any(isinstance(op, AddConstraint) for op in ops)
+    assert not any(
+        isinstance(op, CreateIndex) and op.unique and op.columns == ("title", "edition")
+        for op in ops
+    )
 
 
 def test_callable_default_sentinel_normalized_between_old_and_new():

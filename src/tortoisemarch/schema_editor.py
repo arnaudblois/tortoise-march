@@ -22,7 +22,8 @@ from typing import Any
 from tortoise import BaseDBAsyncClient
 
 from tortoisemarch.exceptions import InvalidMigrationError
-from tortoisemarch.operations import default_index_name
+from tortoisemarch.model_state import ConstraintKind, ConstraintState
+from tortoisemarch.operations import constraint_db_name, default_index_name
 from tortoisemarch.schema_filtering import FK_TYPES, NON_SCHEMA_FIELD_TYPES
 
 PY_CALLABLE_SENTINELS = {"python_callable"}
@@ -203,6 +204,51 @@ class SchemaEditor(ABC):
     async def drop_index(self, conn: BaseDBAsyncClient, name: str) -> None:
         """Drop an index."""
 
+    @abstractmethod
+    def sql_add_constraint(self, db_table: str, constraint: ConstraintState) -> str:
+        """Return SQL to add a model-level constraint."""
+
+    @abstractmethod
+    def sql_drop_constraint(self, db_table: str, name: str) -> str:
+        """Return SQL to drop a model-level constraint."""
+
+    @abstractmethod
+    def sql_rename_constraint(
+        self,
+        db_table: str,
+        old_name: str,
+        new_name: str,
+    ) -> str:
+        """Return SQL to rename a model-level constraint."""
+
+    @abstractmethod
+    async def add_constraint(
+        self,
+        conn: BaseDBAsyncClient,
+        db_table: str,
+        constraint: ConstraintState,
+    ) -> None:
+        """Create a model-level constraint."""
+
+    @abstractmethod
+    async def drop_constraint(
+        self,
+        conn: BaseDBAsyncClient,
+        db_table: str,
+        name: str,
+    ) -> None:
+        """Drop a model-level constraint."""
+
+    @abstractmethod
+    async def rename_constraint(
+        self,
+        conn: BaseDBAsyncClient,
+        db_table: str,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        """Rename a model-level constraint."""
+
 
 # =============================== POSTGRES ===============================
 
@@ -306,6 +352,38 @@ class PostgresSchemaEditor(SchemaEditor):
     def _render_drop_index_sql(self, name: str) -> str:
         """Return SQL to drop an index by name."""
         return f"DROP INDEX IF EXISTS {self._q_ident(name)};"
+
+    def _render_constraint_sql(
+        self,
+        db_table: str,
+        constraint: ConstraintState,
+    ) -> str:
+        """Render the body of a Postgres model-level constraint definition."""
+        if constraint.kind == ConstraintKind.UNIQUE:
+            columns = ", ".join(self._q_ident(column) for column in constraint.columns)
+            return (
+                f"CONSTRAINT {self._q_ident(constraint_db_name(db_table, constraint))} "
+                f"UNIQUE ({columns})"
+            )
+        if constraint.kind == ConstraintKind.CHECK:
+            return (
+                f"CONSTRAINT {self._q_ident(constraint_db_name(db_table, constraint))} "
+                f"CHECK ({constraint.check})"
+            )
+        if constraint.kind == ConstraintKind.EXCLUDE:
+            expressions = ", ".join(
+                f"{self._q_ident(column)} WITH {operator}"
+                for column, operator in constraint.expressions
+            )
+            sql = (
+                f"CONSTRAINT {self._q_ident(constraint_db_name(db_table, constraint))} "
+                f"EXCLUDE USING {constraint.index_type} ({expressions})"
+            )
+            if constraint.condition:
+                sql += f" WHERE ({constraint.condition})"
+            return sql
+        msg = f"Unsupported constraint kind: {constraint.kind!r}"
+        raise InvalidMigrationError(msg)
 
     def _column_def(
         self,
@@ -496,7 +574,7 @@ class PostgresSchemaEditor(SchemaEditor):
 
         return stmts
 
-    def sql_alter_field(  # noqa: C901
+    def sql_alter_field(  # noqa: C901, PLR0912
         self,
         db_table: str,
         field_name: str,
@@ -563,18 +641,52 @@ class PostgresSchemaEditor(SchemaEditor):
                     f"ALTER COLUMN {self._q_ident(column_name)} DROP DEFAULT;",
                 )
 
+        old_unique = bool(old_options.get("unique")) and not old_options.get(
+            "primary_key",
+            False,
+        )
+        new_unique = bool(new_options.get("unique")) and not new_options.get(
+            "primary_key",
+            False,
+        )
+        old_col = self._resolve_column_name(field_name, field_type, old_options)
+        new_col = self._resolve_column_name(
+            new_name or field_name,
+            field_type,
+            new_options,
+        )
+
+        if old_unique and (not new_unique or old_col != new_col):
+            statements.append(
+                self.sql_drop_constraint(
+                    db_table=db_table,
+                    name=constraint_db_name(
+                        db_table,
+                        ConstraintState(kind=ConstraintKind.UNIQUE, columns=(old_col,)),
+                    ),
+                ),
+            )
+
         # (Optional) RENAME as a separate statement at the end
         if new_name and new_name != field_name:
-            old_col = self._resolve_column_name(field_name, field_type, old_options)
-            new_col = self._resolve_column_name(new_name, field_type, new_options)
             statements.append(self.sql_rename_field(db_table, old_col, new_col))
+
+        if new_unique and (not old_unique or old_col != new_col):
+            statements.append(
+                self.sql_add_constraint(
+                    db_table=db_table,
+                    constraint=ConstraintState(
+                        kind=ConstraintKind.UNIQUE,
+                        columns=(new_col,),
+                    ),
+                ),
+            )
 
         # Index creation/drop based on index flag changes
         old_index = self._should_index(old_options)
         new_index = self._should_index(new_options)
-        old_colname = self._resolve_column_name(field_name, field_type, old_options)
-        new_field_name = new_name or field_name
-        new_colname = self._resolve_column_name(new_field_name, field_type, new_options)
+        old_colname = old_col
+        new_colname = new_col
 
         if old_index and (not new_index or old_colname != new_colname):
             statements.append(
@@ -625,6 +737,33 @@ class PostgresSchemaEditor(SchemaEditor):
     def sql_drop_index(self, name: str) -> str:
         """Return SQL to drop an index by name."""
         return self._render_drop_index_sql(name)
+
+    def sql_add_constraint(self, db_table: str, constraint: ConstraintState) -> str:
+        """Return SQL to add a model-level constraint."""
+        return (
+            f"ALTER TABLE {self._q_ident(db_table.lower())} "
+            f"ADD {self._render_constraint_sql(db_table, constraint)};"
+        )
+
+    def sql_drop_constraint(self, db_table: str, name: str) -> str:
+        """Return SQL to drop a model-level constraint."""
+        _ = db_table
+        return (
+            f"ALTER TABLE {self._q_ident(db_table.lower())} "
+            f"DROP CONSTRAINT IF EXISTS {self._q_ident(name)};"
+        )
+
+    def sql_rename_constraint(
+        self,
+        db_table: str,
+        old_name: str,
+        new_name: str,
+    ) -> str:
+        """Return SQL to rename a model-level constraint."""
+        return (
+            f"ALTER TABLE {self._q_ident(db_table.lower())} "
+            f"RENAME CONSTRAINT {self._q_ident(old_name)} TO {self._q_ident(new_name)};"
+        )
 
     # -------------------------- execution (async) -----------------------
 
@@ -738,6 +877,41 @@ class PostgresSchemaEditor(SchemaEditor):
     async def drop_index(self, conn: BaseDBAsyncClient, name: str) -> None:
         """Execute SQL to drop an index."""
         sql = self.sql_drop_index(name=name)
+        await self._execute(conn, sql)
+
+    async def add_constraint(
+        self,
+        conn: BaseDBAsyncClient,
+        db_table: str,
+        constraint: ConstraintState,
+    ) -> None:
+        """Execute SQL to add a model-level constraint."""
+        sql = self.sql_add_constraint(db_table=db_table, constraint=constraint)
+        await self._execute(conn, sql)
+
+    async def drop_constraint(
+        self,
+        conn: BaseDBAsyncClient,
+        db_table: str,
+        name: str,
+    ) -> None:
+        """Execute SQL to drop a model-level constraint."""
+        sql = self.sql_drop_constraint(db_table=db_table, name=name)
+        await self._execute(conn, sql)
+
+    async def rename_constraint(
+        self,
+        conn: BaseDBAsyncClient,
+        db_table: str,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        """Execute SQL to rename a model-level constraint."""
+        sql = self.sql_rename_constraint(
+            db_table=db_table,
+            old_name=old_name,
+            new_name=new_name,
+        )
         await self._execute(conn, sql)
 
     # ------------------------- type mapping -----------------------------

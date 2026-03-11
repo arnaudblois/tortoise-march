@@ -10,6 +10,7 @@ This page documents the public surface we commit to for `0.1.x`.
 ## Public Python API
 
 - `tortoisemarch.base.BaseMigration`
+- `tortoisemarch.ExclusionConstraint`
 - `tortoisemarch.operations.*` migration operation classes
 - `tortoisemarch.migrate.migrate`
 - `tortoisemarch.makemigrations.makemigrations`

@@ -5,6 +5,7 @@ table, add/alter/rename a column). The concrete execution and SQL rendering
 are delegated to the active `SchemaEditor` (e.g., Postgres).
 """
 
+import hashlib
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -12,7 +13,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from tortoisemarch.exceptions import NotReversibleMigrationError
-from tortoisemarch.model_state import FieldState, ModelState, ProjectState
+from tortoisemarch.model_state import (
+    ConstraintKind,
+    ConstraintState,
+    FieldState,
+    IndexState,
+    ModelState,
+    ProjectState,
+)
 from tortoisemarch.schema_filtering import (
     _value_for_migration_code,
     column_sort_key,
@@ -64,11 +72,44 @@ def _prune_options_for_field_type(
     return pruned
 
 
+def _constraint_from_payload(
+    payload: ConstraintState | dict[str, Any],
+) -> ConstraintState:
+    """Normalize constraint payloads passed by migrations into ConstraintState."""
+    if isinstance(payload, ConstraintState):
+        return payload
+    return ConstraintState.from_dict(payload)
+
+
 def default_index_name(db_table: str, columns: tuple[str, ...], *, unique: bool) -> str:
     """Return a stable index name given table/columns/uniqueness."""
     cols = "_".join(c.lower() for c in columns)
     suffix = "uniq" if unique else "idx"
     return f"{db_table.lower()}_{cols}_{suffix}"
+
+
+def default_constraint_name(db_table: str, constraint: ConstraintState) -> str:
+    """Return a stable physical name for a constraint when no name is provided."""
+    if constraint.kind == ConstraintKind.UNIQUE:
+        return default_index_name(db_table, constraint.columns, unique=True)
+    if constraint.kind == ConstraintKind.CHECK:
+        digest = hashlib.sha256(constraint.check.encode("utf-8")).hexdigest()[:8]
+        return f"{db_table.lower()}_{digest}_check"
+
+    payload = repr(
+        (
+            constraint.expressions,
+            constraint.index_type,
+            constraint.condition,
+        ),
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+    return f"{db_table.lower()}_{digest}_excl"
+
+
+def constraint_db_name(db_table: str, constraint: ConstraintState) -> str:
+    """Return the concrete database name for a constraint."""
+    return constraint.name or default_constraint_name(db_table, constraint)
 
 
 class Operation(ABC):
@@ -216,6 +257,9 @@ class RenameModel(Operation):
             name=self.new_name,
             db_table=self.new_db_table,
             field_states=ms.field_states,
+            indexes=list(ms.indexes),
+            constraints=list(ms.constraints),
+            meta=dict(ms.meta),
         )
 
         # Rewrite FK metadata across all models.
@@ -637,13 +681,13 @@ class CreateIndex(Operation):
     def mutate_state(self, state: ProjectState) -> None:
         """Track index metadata in the in-memory state."""
         model = state.model_states[self.model_name]
-        meta = model.meta or {}
-        indexes = list(meta.get("indexes", []))
-        key = (tuple(self.columns), self.unique)
-        if key not in indexes:
-            indexes.append(key)
-        meta["indexes"] = indexes
-        model.meta = meta
+        index = IndexState(
+            columns=tuple(self.columns),
+            name=self.name,
+            unique=self.unique,
+        )
+        if index not in model.indexes:
+            model.indexes.append(index)
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
@@ -694,15 +738,28 @@ class RemoveIndex(Operation):
     def mutate_state(self, state: ProjectState) -> None:
         """Remove index metadata from the in-memory state."""
         model = state.model_states[self.model_name]
-        meta = model.meta or {}
+        target_name = self.name
         target_cols = tuple(self.columns or ())
-        indexes = [
-            ix
-            for ix in meta.get("indexes", [])
-            if not (tuple(ix[0]) == target_cols and bool(ix[1]) == self.unique)
+        model.indexes = [
+            index
+            for index in model.indexes
+            if not (
+                (
+                    index.name
+                    or default_index_name(
+                        self.db_table,
+                        index.columns,
+                        unique=index.unique,
+                    )
+                )
+                == target_name
+                or (
+                    bool(self.columns)
+                    and index.columns == target_cols
+                    and index.unique == self.unique
+                )
+            )
         ]
-        meta["indexes"] = indexes
-        model.meta = meta
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
@@ -716,6 +773,192 @@ class RemoveIndex(Operation):
         if self.unique:
             args += ", unique=True"
         return f"RemoveIndex({args})"
+
+
+@dataclass
+class AddConstraint(Operation):
+    """Add a model-level constraint to an existing table."""
+
+    model_name: str
+    db_table: str
+    constraint: ConstraintState | dict[str, Any]
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        self.constraint = _constraint_from_payload(self.constraint)
+        if self.name is None:
+            self.name = constraint_db_name(self.db_table, self.constraint)
+
+    async def apply(self, conn, schema_editor) -> None:
+        """Create the constraint on the table."""
+        await schema_editor.add_constraint(
+            conn,
+            db_table=self.db_table,
+            constraint=self.constraint,
+        )
+
+    async def unapply(self, conn, schema_editor) -> None:
+        """Drop the created constraint."""
+        await schema_editor.drop_constraint(
+            conn,
+            db_table=self.db_table,
+            name=self.name,
+        )
+
+    async def to_sql(self, conn, schema_editor) -> list[str]:
+        """Return SQL to create the constraint."""
+        _ = conn
+        return [
+            schema_editor.sql_add_constraint(
+                db_table=self.db_table,
+                constraint=self.constraint,
+            ),
+        ]
+
+    def mutate_state(self, state: ProjectState) -> None:
+        """Track the constraint metadata in the in-memory state."""
+        model = state.model_states[self.model_name]
+        if self.constraint not in model.constraints:
+            model.constraints.append(self.constraint)
+
+    def to_code(self) -> str:
+        """Return Python code to recreate this operation."""
+        return (
+            f"AddConstraint(model_name={self.model_name!r}, "
+            f"db_table={self.db_table!r}, "
+            f"constraint={self.constraint.to_dict()!r}, "
+            f"name={self.name!r})"
+        )
+
+
+@dataclass
+class RemoveConstraint(Operation):
+    """Drop a model-level constraint from an existing table."""
+
+    model_name: str
+    db_table: str
+    constraint: ConstraintState | dict[str, Any]
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        self.constraint = _constraint_from_payload(self.constraint)
+        if self.name is None:
+            self.name = constraint_db_name(self.db_table, self.constraint)
+
+    async def apply(self, conn, schema_editor) -> None:
+        """Drop the constraint."""
+        await schema_editor.drop_constraint(
+            conn,
+            db_table=self.db_table,
+            name=self.name,
+        )
+
+    async def unapply(self, conn, schema_editor) -> None:
+        """Recreate the removed constraint."""
+        await schema_editor.add_constraint(
+            conn,
+            db_table=self.db_table,
+            constraint=self.constraint,
+        )
+
+    async def to_sql(self, conn, schema_editor) -> list[str]:
+        """Return SQL to drop the constraint."""
+        _ = conn
+        return [
+            schema_editor.sql_drop_constraint(
+                db_table=self.db_table,
+                name=self.name,
+            ),
+        ]
+
+    def mutate_state(self, state: ProjectState) -> None:
+        """Remove constraint metadata from the in-memory state."""
+        model = state.model_states[self.model_name]
+        model.constraints = [
+            constraint
+            for constraint in model.constraints
+            if constraint != self.constraint
+        ]
+
+    def to_code(self) -> str:
+        """Return Python code to recreate this operation."""
+        return (
+            f"RemoveConstraint(model_name={self.model_name!r}, "
+            f"db_table={self.db_table!r}, "
+            f"constraint={self.constraint.to_dict()!r}, "
+            f"name={self.name!r})"
+        )
+
+
+@dataclass
+class RenameConstraint(Operation):
+    """Rename a model-level constraint while preserving its semantics."""
+
+    model_name: str
+    db_table: str
+    old_name: str
+    new_name: str
+    old_constraint: ConstraintState | dict[str, Any]
+    new_constraint: ConstraintState | dict[str, Any]
+
+    def __post_init__(self) -> None:
+        self.old_constraint = _constraint_from_payload(self.old_constraint)
+        self.new_constraint = _constraint_from_payload(self.new_constraint)
+
+    async def apply(self, conn, schema_editor) -> None:
+        """Rename the constraint on the table."""
+        await schema_editor.rename_constraint(
+            conn,
+            db_table=self.db_table,
+            old_name=self.old_name,
+            new_name=self.new_name,
+        )
+
+    async def unapply(self, conn, schema_editor) -> None:
+        """Undo the constraint rename."""
+        await schema_editor.rename_constraint(
+            conn,
+            db_table=self.db_table,
+            old_name=self.new_name,
+            new_name=self.old_name,
+        )
+
+    async def to_sql(self, conn, schema_editor) -> list[str]:
+        """Return SQL to rename the constraint."""
+        _ = conn
+        return [
+            schema_editor.sql_rename_constraint(
+                db_table=self.db_table,
+                old_name=self.old_name,
+                new_name=self.new_name,
+            ),
+        ]
+
+    def mutate_state(self, state: ProjectState) -> None:
+        """Update the in-memory state to reflect the renamed constraint."""
+        model = state.model_states[self.model_name]
+        updated: list[ConstraintState] = []
+        replaced = False
+        for constraint in model.constraints:
+            if constraint == self.old_constraint and not replaced:
+                updated.append(self.new_constraint)
+                replaced = True
+            else:
+                updated.append(constraint)
+        if not replaced:
+            updated.append(self.new_constraint)
+        model.constraints = updated
+
+    def to_code(self) -> str:
+        """Return Python code to recreate this operation."""
+        return (
+            f"RenameConstraint(model_name={self.model_name!r}, "
+            f"db_table={self.db_table!r}, "
+            f"old_name={self.old_name!r}, "
+            f"new_name={self.new_name!r}, "
+            f"old_constraint={self.old_constraint.to_dict()!r}, "
+            f"new_constraint={self.new_constraint.to_dict()!r})"
+        )
 
 
 @dataclass

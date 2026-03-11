@@ -40,6 +40,9 @@ def _auto_name(operations: list, number: int) -> str:  # noqa: C901, PLR0912
         "RunPython": 1,
         "CreateIndex": 2,
         "RemoveIndex": 2,
+        "AddConstraint": 2,
+        "RemoveConstraint": 2,
+        "RenameConstraint": 2,
     }
     ranked_ops = sorted(
         enumerate(operations),
@@ -86,6 +89,12 @@ def _auto_name(operations: list, number: int) -> str:  # noqa: C901, PLR0912
             )
         elif cname == "RemoveIndex":
             parts.append(f"removeindex_{_safe_fragment(op.model_name)}")
+        elif cname == "AddConstraint":
+            parts.append(f"addconstraint_{_safe_fragment(op.model_name)}")
+        elif cname == "RemoveConstraint":
+            parts.append(f"removeconstraint_{_safe_fragment(op.model_name)}")
+        elif cname == "RenameConstraint":
+            parts.append(f"renameconstraint_{_safe_fragment(op.model_name)}")
         elif cname == "RunPython":
             parts.append("runpython")
     if len(operations) > 2:  # noqa: PLR2004

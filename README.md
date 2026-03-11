@@ -8,12 +8,26 @@ Unlike Aerich, Tortoise March tracks model state explicitly, generates readable 
 
 Documentation: https://arnaudblois.github.io/tortoise-march/
 
+## Why Tortoise March?
+
+Tortoise March was developed to address the need of Django-style migrations at the time Tortoise was relying on Aerich for migrations. Since Tortoise ORM `1.1.5`, Tortoise ships its own migration system. You may still prefer Tortoise March if you want:
+
+- a single, central migrations folder instead of more brittle per-app migration package
+- small, readable, fully linted Python migration files with predictable generated operations
+- first-class handling of model-level indexes and constraints in migration state
+
+Tortoise March is used in real production systems and has been battle-tested there.
+
 ---
 
 ## Features
 
 - Tracks full model state over time and diffs it to generate migrations
 - Generates readable, Python-based migration files (no raw SQL)
+- Supports model-level indexes and constraints in migration state
+- Supports `UniqueConstraint` and `CheckConstraint` on Postgres
+- Treats `unique_together` as a real unique constraint during extraction/diffing
+- Handles `AlterField(unique=...)` with named constraint DDL on Postgres
 - Supports custom logic through data migrations
 - Centralised migration folder for simplicity
 - Includes full integration tests with Postgres
@@ -95,6 +109,10 @@ poetry run tortoisemarch makemigrations
 
 This creates a file in `migrations/` with operations like `CreateModel`, `AddField`, and so on.
 
+Tortoise March now also emits model-level schema operations such as
+`CreateIndex`, `AddConstraint`, `RemoveConstraint`, and `RenameConstraint`
+when your Tortoise models define indexes or constraints.
+
 `makemigrations` options:
 
 - `--empty` creates a data-migration stub with a `RunPython` placeholder.
@@ -122,6 +140,141 @@ Migration safety:
 - We store a SHA-256 checksum for each applied migration file.
 - We fail fast if an applied migration file is missing or has been modified.
 - We treat applied migrations as immutable history. To change behavior, add a new migration.
+
+### Constraint support
+
+On Postgres, Tortoise March currently supports:
+
+- model-level `UniqueConstraint`
+- model-level `CheckConstraint`
+- `Meta.tortoisemarch_constraints` for TortoiseMarch-owned constraints such as `ExclusionConstraint`
+- `Meta.unique_together`, normalized as a unique constraint
+- single-column `unique=True` changes through `AlterField`
+
+#### Background
+
+Constraints are database rules that protect invariants even when application
+code is wrong or bypassed.
+
+- A unique constraint says that a value or combination of values must not appear twice.
+- A check constraint says that each row must satisfy a boolean SQL expression.
+- An exclusion constraint says that two rows must not conflict under a given operator set.
+
+In practice:
+
+- use a unique constraint for things like `email` uniqueness or `(tenant, slug)` uniqueness
+- use a check constraint for things like `age >= 18` or `starts_at < ends_at`
+- use an exclusion constraint for Postgres-specific "no overlap" rules such as room bookings or reservation windows
+
+Tortoise March treats these as first-class schema objects. That matters because
+they are not just implementation details of a column: they have names, can be
+renamed independently, and sometimes need `ADD CONSTRAINT` / `DROP CONSTRAINT`
+DDL instead of a simple column alteration.
+
+#### Defining Constraints In Tortoise Models
+
+When Tortoise ORM exposes a constraint object directly, define it on
+`Meta.constraints`. Tortoise March will extract it, keep it in migration state,
+diff it semantically, and emit model-level constraint operations.
+
+Example:
+
+```python
+from tortoise import fields, models
+from tortoise.constraints import CheckConstraint, UniqueConstraint
+
+
+class Member(models.Model):
+    email = fields.CharField(max_length=255)
+    age = fields.IntField()
+    tenant = fields.CharField(max_length=50)
+
+    class Meta:
+        constraints = (
+            UniqueConstraint(
+                fields=("tenant", "email"),
+                name="member_tenant_email_uniq",
+            ),
+            CheckConstraint(
+                check="age >= 18",
+                name="member_age_check",
+            ),
+        )
+```
+
+Legacy `unique_together` is also supported:
+
+```python
+class Meta:
+    unique_together = (("tenant", "slug"),)
+```
+
+Tortoise March normalizes that into a real unique constraint internally, so it
+diffs and migrates like the explicit form above.
+
+#### ExclusionConstraint Without ORM Support
+
+`ExclusionConstraint` is different: Tortoise ORM does not model it yet, so we
+do not pretend it is a native ORM feature. Instead, Tortoise March provides its
+own helper and a namespaced Meta attribute, `Meta.tortoisemarch_constraints`.
+
+This is deliberate:
+
+- it keeps the unsupported surface area clearly owned by Tortoise March
+- it avoids fragile workarounds around missing ORM features
+- it still lets migrations round-trip the schema cleanly
+
+Use TortoiseMarch's helper instead of Tortoise ORM's unsupported API surface:
+
+```python
+from tortoise import fields, models
+from tortoisemarch.constraints import ExclusionConstraint
+
+
+class Booking(models.Model):
+    room = fields.IntField()
+    timespan = fields.CharField(max_length=255)
+
+    class Meta:
+        tortoisemarch_constraints = (
+            ExclusionConstraint(
+                expressions=(("room", "="), ("timespan", "&&")),
+                name="booking_room_timespan_excl",
+                index_type="gist",
+                condition="cancelled_at IS NULL",
+            ),
+        )
+```
+
+`expressions` is a tuple of `(field_or_column, operator)` pairs. Tortoise March
+validates the referenced field or column names against the extracted model
+schema, resolves logical field names to physical database columns when needed,
+and renders PostgreSQL `EXCLUDE USING ...` DDL during migration.
+
+#### What Tortoise March Does With Constraints
+
+Once extracted from your model definitions, Tortoise March:
+
+- stores constraints explicitly in migration state instead of collapsing them into generic metadata
+- compares them semantically during diffing, so a pure rename becomes `RenameConstraint`
+- emits `AddConstraint` and `RemoveConstraint` when the rule itself changes
+- preserves custom names when you provide them
+- generates deterministic fallback names when you do not
+- maps logical field names to actual database column names before generating SQL
+
+For example:
+
+- changing only the name of a unique, check, or exclusion constraint produces a rename
+- changing the columns of a unique constraint produces remove + add
+- changing the operator set or condition of an exclusion constraint produces remove + add
+- toggling `unique=True` on a field uses named constraint DDL rather than pretending it is just an index
+
+This means migration history stays readable and reviewable. You can see whether
+you renamed a constraint, changed its semantics, or introduced a brand new rule.
+
+Not supported yet:
+
+- conditional unique constraints
 
 ---
 

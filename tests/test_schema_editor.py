@@ -6,12 +6,16 @@ import asyncpg
 import pytest
 
 from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.model_state import ConstraintState
 from tortoisemarch.operations import (
+    AddConstraint,
     AddField,
     AlterField,
     CreateModel,
+    RemoveConstraint,
     RemoveField,
     RemoveModel,
+    RenameConstraint,
 )
 from tortoisemarch.schema_editor import PostgresSchemaEditor
 
@@ -220,6 +224,121 @@ async def test_alter_field_accepts_enum_default(schema_editor):
             "WHERE table_name='msg' AND column_name='status'",
         )
         assert "sent" in (default_sql or "")
+    finally:
+        await conn.close()
+
+
+async def test_constraint_operations_apply_against_postgres(schema_editor):
+    """Constraint operations should execute cleanly against Postgres."""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute('DROP TABLE IF EXISTS "member" CASCADE')
+        await conn.execute(
+            'CREATE TABLE "member" ('
+            "id SERIAL PRIMARY KEY, "
+            "email VARCHAR(255), age INTEGER)",
+        )
+
+        add = AddConstraint(
+            model_name="Member",
+            db_table="member",
+            constraint=ConstraintState(
+                kind="unique",
+                name="member_email_uniq",
+                columns=("email",),
+            ),
+        )
+        await add.apply(conn, schema_editor)
+
+        exists = await conn.fetchval(
+            "SELECT EXISTS ("
+            "SELECT 1 FROM pg_constraint "
+            "WHERE conname = 'member_email_uniq')",
+        )
+        assert exists is True
+
+        rename = RenameConstraint(
+            model_name="Member",
+            db_table="member",
+            old_name="member_email_uniq",
+            new_name="member_primary_email_uniq",
+            old_constraint=ConstraintState(
+                kind="unique",
+                name="member_email_uniq",
+                columns=("email",),
+            ),
+            new_constraint=ConstraintState(
+                kind="unique",
+                name="member_primary_email_uniq",
+                columns=("email",),
+            ),
+        )
+        await rename.apply(conn, schema_editor)
+        renamed = await conn.fetchval(
+            "SELECT EXISTS ("
+            "SELECT 1 FROM pg_constraint "
+            "WHERE conname = 'member_primary_email_uniq')",
+        )
+        assert renamed is True
+
+        remove = RemoveConstraint(
+            model_name="Member",
+            db_table="member",
+            constraint=ConstraintState(
+                kind="unique",
+                name="member_primary_email_uniq",
+                columns=("email",),
+            ),
+        )
+        await remove.apply(conn, schema_editor)
+        removed = await conn.fetchval(
+            "SELECT EXISTS ("
+            "SELECT 1 FROM pg_constraint "
+            "WHERE conname = 'member_primary_email_uniq')",
+        )
+        assert removed is False
+    finally:
+        await conn.close()
+
+
+async def test_alter_field_unique_toggle_applies_constraints(schema_editor):
+    """AlterField unique changes should add and drop named constraints."""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute('DROP TABLE IF EXISTS "account" CASCADE')
+        await conn.execute(
+            'CREATE TABLE "account" (id SERIAL PRIMARY KEY, email VARCHAR(255))',
+        )
+
+        add_unique = AlterField(
+            model_name="Account",
+            db_table="account",
+            field_name="email",
+            old_options={"type": "CharField", "max_length": 255, "unique": False},
+            new_options={"type": "CharField", "max_length": 255, "unique": True},
+        )
+        await add_unique.apply(conn, schema_editor)
+        added = await conn.fetchval(
+            "SELECT EXISTS ("
+            "SELECT 1 FROM pg_constraint "
+            "WHERE conname = 'account_email_uniq')",
+        )
+        assert added is True
+
+        drop_unique = AlterField(
+            model_name="Account",
+            db_table="account",
+            field_name="email",
+            old_options={"type": "CharField", "max_length": 255, "unique": True},
+            new_options={"type": "CharField", "max_length": 255, "unique": False},
+        )
+        await drop_unique.apply(conn, schema_editor)
+        removed = await conn.fetchval(
+            "SELECT EXISTS ("
+            "SELECT 1 FROM pg_constraint "
+            "WHERE conname = 'account_email_uniq')",
+        )
+        assert removed is False
     finally:
         await conn.close()
 
@@ -512,6 +631,93 @@ def test_sql_alter_field_handles_index_changes():
         new_options={"type": "IntField", "index": False},
     )
     assert stmts == ['DROP INDEX IF EXISTS "invitation_membership_idx";']
+
+
+def test_sql_constraint_helpers_render_postgres_constraints():
+    """Constraint SQL helpers should emit proper Postgres constraint DDL."""
+    ed = PostgresSchemaEditor()
+
+    unique_sql = ed.sql_add_constraint(
+        db_table="member",
+        constraint=ConstraintState(
+            kind="unique",
+            name="member_email_uniq",
+            columns=("email",),
+        ),
+    )
+    assert (
+        unique_sql
+        == 'ALTER TABLE "member" ADD CONSTRAINT "member_email_uniq" UNIQUE ("email");'
+    )
+
+    check_sql = ed.sql_add_constraint(
+        db_table="member",
+        constraint=ConstraintState(
+            kind="check",
+            name="member_age_check",
+            check="age >= 18",
+        ),
+    )
+    assert (
+        check_sql
+        == 'ALTER TABLE "member" ADD CONSTRAINT "member_age_check" CHECK (age >= 18);'
+    )
+
+    exclude_sql = ed.sql_add_constraint(
+        db_table="booking",
+        constraint=ConstraintState(
+            kind="exclude",
+            name="booking_room_timespan_excl",
+            expressions=(("room", "="), ("timespan", "&&")),
+            index_type="gist",
+            condition="cancelled_at IS NULL",
+        ),
+    )
+    assert (
+        exclude_sql
+        == 'ALTER TABLE "booking" ADD CONSTRAINT "booking_room_timespan_excl" '
+        'EXCLUDE USING gist ("room" WITH =, "timespan" WITH &&) '
+        "WHERE (cancelled_at IS NULL);"
+    )
+
+    assert (
+        ed.sql_drop_constraint(db_table="member", name="member_email_uniq")
+        == 'ALTER TABLE "member" DROP CONSTRAINT IF EXISTS "member_email_uniq";'
+    )
+    assert ed.sql_rename_constraint(
+        db_table="member",
+        old_name="member_email_uniq",
+        new_name="member_primary_email_uniq",
+    ) == (
+        'ALTER TABLE "member" RENAME CONSTRAINT "member_email_uniq" '
+        'TO "member_primary_email_uniq";'
+    )
+
+
+def test_sql_alter_field_handles_unique_constraint_changes():
+    """AlterField should use constraint DDL when unique changes after creation."""
+    ed = PostgresSchemaEditor()
+
+    stmts = ed.sql_alter_field(
+        db_table="member",
+        field_name="email",
+        old_options={"type": "CharField", "max_length": 255, "unique": False},
+        new_options={"type": "CharField", "max_length": 255, "unique": True},
+    )
+    assert (
+        'ALTER TABLE "member" ADD CONSTRAINT "member_email_uniq" UNIQUE ("email");'
+        in stmts
+    )
+
+    stmts = ed.sql_alter_field(
+        db_table="member",
+        field_name="email",
+        old_options={"type": "CharField", "max_length": 255, "unique": True},
+        new_options={"type": "CharField", "max_length": 255, "unique": False},
+    )
+    assert stmts == [
+        'ALTER TABLE "member" DROP CONSTRAINT IF EXISTS "member_email_uniq";',
+    ]
 
 
 def test_sql_alter_field_supports_integer_widening():

@@ -3,15 +3,24 @@
 from enum import Enum
 
 from tortoisemarch.differ import diff_states
-from tortoisemarch.model_state import FieldState, ModelState, ProjectState
+from tortoisemarch.model_state import (
+    ConstraintState,
+    FieldState,
+    IndexState,
+    ModelState,
+    ProjectState,
+)
 from tortoisemarch.operations import (
+    AddConstraint,
     AddField,
     AlterField,
     CreateIndex,
     CreateModel,
+    RemoveConstraint,
     RemoveField,
     RemoveIndex,
     RemoveModel,
+    RenameConstraint,
     RenameField,
     RenameModel,
     RunPython,
@@ -425,7 +434,7 @@ async def test_runpython_accepts_zero_arg_callable():
 
 
 async def test_createindex_and_removeindex_to_code_and_mutation():
-    """CreateIndex/RemoveIndex should render code and update meta indexes."""
+    """CreateIndex/RemoveIndex should render code and update index state."""
     state = ProjectState(
         model_states={
             "Item": ModelState(name="Item", db_table="item", field_states={}),
@@ -443,7 +452,9 @@ async def test_createindex_and_removeindex_to_code_and_mutation():
     assert "CREATE INDEX" in sql[0]
     assert "item_a_b_idx" in sql[0]
     ci.mutate_state(state)
-    assert (("a", "b"), False) in state.model_states["Item"].meta.get("indexes", [])
+    assert state.model_states["Item"].indexes == [
+        IndexState(columns=("a", "b"), name="item_a_b_idx"),
+    ]
 
     ri = RemoveIndex(
         model_name="Item",
@@ -455,7 +466,117 @@ async def test_createindex_and_removeindex_to_code_and_mutation():
     sql_drop = await ri.to_sql(conn=None, schema_editor=PostgresSchemaEditor())
     assert "DROP INDEX" in sql_drop[0]
     ri.mutate_state(state)
-    assert not state.model_states["Item"].meta.get("indexes")
+    assert not state.model_states["Item"].indexes
+
+
+async def test_constraint_operations_render_and_mutate_state():
+    """Constraint operations should render code and update model constraint state."""
+    state = ProjectState(
+        model_states={
+            "Item": ModelState(name="Item", db_table="item", field_states={}),
+        },
+    )
+    constraint = ConstraintState(kind="unique", name="item_sku_uniq", columns=("sku",))
+
+    add = AddConstraint(
+        model_name="Item",
+        db_table="item",
+        constraint=constraint,
+    )
+    add_sql = await add.to_sql(conn=None, schema_editor=PostgresSchemaEditor())
+    assert 'ADD CONSTRAINT "item_sku_uniq" UNIQUE ("sku")' in add_sql[0]
+    add.mutate_state(state)
+    assert state.model_states["Item"].constraints == [constraint]
+
+    rename = RenameConstraint(
+        model_name="Item",
+        db_table="item",
+        old_name="item_sku_uniq",
+        new_name="item_stock_keeping_unit_uniq",
+        old_constraint=constraint,
+        new_constraint=ConstraintState(
+            kind="unique",
+            name="item_stock_keeping_unit_uniq",
+            columns=("sku",),
+        ),
+    )
+    rename_sql = await rename.to_sql(conn=None, schema_editor=PostgresSchemaEditor())
+    assert rename_sql[0] == (
+        'ALTER TABLE "item" RENAME CONSTRAINT "item_sku_uniq" '
+        'TO "item_stock_keeping_unit_uniq";'
+    )
+    rename.mutate_state(state)
+    assert state.model_states["Item"].constraints == [
+        ConstraintState(
+            kind="unique",
+            name="item_stock_keeping_unit_uniq",
+            columns=("sku",),
+        ),
+    ]
+
+    remove = RemoveConstraint(
+        model_name="Item",
+        db_table="item",
+        constraint=ConstraintState(
+            kind="unique",
+            name="item_stock_keeping_unit_uniq",
+            columns=("sku",),
+        ),
+    )
+    remove_sql = await remove.to_sql(conn=None, schema_editor=PostgresSchemaEditor())
+    assert 'DROP CONSTRAINT IF EXISTS "item_stock_keeping_unit_uniq";' in remove_sql[0]
+    remove.mutate_state(state)
+    assert not state.model_states["Item"].constraints
+
+
+async def test_exclusion_constraint_operations_render_and_mutate_state():
+    """Exclusion constraints should render SQL and update state like others."""
+    state = ProjectState(
+        model_states={
+            "Booking": ModelState(name="Booking", db_table="booking", field_states={}),
+        },
+    )
+    constraint = ConstraintState(
+        kind="exclude",
+        name="booking_room_timespan_excl",
+        expressions=(("room", "="), ("timespan", "&&")),
+        index_type="gist",
+        condition="cancelled_at IS NULL",
+    )
+
+    add = AddConstraint(
+        model_name="Booking",
+        db_table="booking",
+        constraint=constraint,
+    )
+    add_sql = await add.to_sql(conn=None, schema_editor=PostgresSchemaEditor())
+    assert (
+        add_sql[0]
+        == 'ALTER TABLE "booking" ADD CONSTRAINT "booking_room_timespan_excl" '
+        'EXCLUDE USING gist ("room" WITH =, "timespan" WITH &&) '
+        "WHERE (cancelled_at IS NULL);"
+    )
+    add.mutate_state(state)
+    assert state.model_states["Booking"].constraints == [constraint]
+
+
+def test_add_constraint_to_code_is_deterministic():
+    """Constraint operations should render deterministic migration code."""
+    op = AddConstraint(
+        model_name="Invoice",
+        db_table="invoice",
+        constraint=ConstraintState(
+            kind="check",
+            name="invoice_total_check",
+            check="total >= 0",
+        ),
+    )
+
+    assert (
+        op.to_code() == "AddConstraint(model_name='Invoice', db_table='invoice', "
+        "constraint={'kind': 'check', 'name': 'invoice_total_check', "
+        "'check': 'total >= 0'}, name='invoice_total_check')"
+    )
 
 
 def test_alter_field_to_code_orders_changed_opts():

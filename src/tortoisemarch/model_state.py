@@ -1,11 +1,22 @@
 """Classes used to represent the project state.
 
-This is used to diff the current state as defined in the code
-versus what is reconstructed from the migrations.
+This state is the single source of truth that powers diffing, migration replay,
+and migration code generation. We keep model-level schema objects explicit so we
+can preserve semantics like named constraints instead of collapsing everything
+into a generic metadata bucket.
 """
 
 from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from typing import Any
+
+
+class ConstraintKind(StrEnum):
+    """Supported kinds of model-level constraints."""
+
+    UNIQUE = "unique"
+    CHECK = "check"
+    EXCLUDE = "exclude"
 
 
 @dataclass
@@ -67,6 +78,177 @@ class FieldState:
         return output
 
 
+@dataclass(eq=True, frozen=True)
+class IndexState:
+    """Snapshot of a model-level index.
+
+    We keep index names explicit because unnamed-vs-named is meaningful for
+    migration rendering and later rename detection.
+    """
+
+    columns: tuple[str, ...]
+    name: str | None = None
+    unique: bool = False
+    index_type: str = ""
+    extra: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the index state to a stable plain dict."""
+        return {
+            "columns": list(self.columns),
+            "name": self.name,
+            "unique": self.unique,
+            "index_type": self.index_type,
+            "extra": self.extra,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "IndexState":
+        """Rehydrate an IndexState from plain data."""
+        return cls(
+            columns=tuple(data.get("columns", ()) or ()),
+            name=data.get("name"),
+            unique=bool(data.get("unique", False)),
+            index_type=str(data.get("index_type", "")),
+            extra=str(data.get("extra", "")),
+        )
+
+    @property
+    def semantic_key(self) -> tuple[Any, ...]:
+        """Return the payload used for semantic equality and rename detection."""
+        return (
+            self.columns,
+            self.unique,
+            self.index_type,
+            self.extra,
+        )
+
+
+@dataclass(eq=True, frozen=True)
+class ConstraintState:
+    """Snapshot of a model-level constraint.
+
+    Currently supported kinds:
+    - ``unique`` with ``columns``
+    - ``check`` with ``check``
+    - ``exclude`` with ``expressions`` and ``index_type``
+    """
+
+    kind: ConstraintKind | str
+    name: str | None = None
+    columns: tuple[str, ...] = ()
+    check: str | None = None
+    expressions: tuple[tuple[str, str], ...] = ()
+    index_type: str = ""
+    condition: str | None = None
+
+    def _validate_unique(self) -> None:
+        """Validate the payload for a unique constraint."""
+        if not self.columns:
+            msg = "Unique constraints require at least one column."
+            raise ValueError(msg)
+        if any(
+            value
+            for value in (
+                self.check,
+                self.expressions,
+                self.index_type,
+                self.condition,
+            )
+        ):
+            msg = "Unique constraints cannot carry non-unique payload fields."
+            raise ValueError(msg)
+
+    def _validate_check(self) -> None:
+        """Validate the payload for a check constraint."""
+        if not self.check:
+            msg = "Check constraints require a check expression."
+            raise ValueError(msg)
+        if any(
+            value
+            for value in (
+                self.columns,
+                self.expressions,
+                self.index_type,
+                self.condition,
+            )
+        ):
+            msg = "Check constraints cannot carry column or exclusion payloads."
+            raise ValueError(msg)
+
+    def _validate_exclude(self) -> None:
+        """Validate the payload for an exclusion constraint."""
+        if not self.expressions:
+            msg = "Exclusion constraints require at least one expression."
+            raise ValueError(msg)
+        if not self.index_type:
+            msg = "Exclusion constraints require an index_type."
+            raise ValueError(msg)
+        if self.columns or self.check is not None:
+            msg = "Exclusion constraints cannot carry unique/check payload fields."
+            raise ValueError(msg)
+
+    def __post_init__(self) -> None:
+        """Validate that the payload matches the constraint kind."""
+        try:
+            kind = ConstraintKind(self.kind)
+        except ValueError as error:
+            msg = f"Unsupported constraint kind: {self.kind!r}"
+            raise ValueError(msg) from error
+        object.__setattr__(self, "kind", kind)
+
+        if self.kind == ConstraintKind.UNIQUE:
+            self._validate_unique()
+            return
+        if self.kind == ConstraintKind.CHECK:
+            self._validate_check()
+            return
+        self._validate_exclude()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the constraint state to a stable plain dict."""
+        data: dict[str, Any] = {
+            "kind": self.kind.value,
+            "name": self.name,
+        }
+        if self.columns:
+            data["columns"] = list(self.columns)
+        if self.check is not None:
+            data["check"] = self.check
+        if self.expressions:
+            data["expressions"] = [list(expression) for expression in self.expressions]
+        if self.index_type:
+            data["index_type"] = self.index_type
+        if self.condition is not None:
+            data["condition"] = self.condition
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ConstraintState":
+        """Rehydrate a ConstraintState from plain data."""
+        return cls(
+            kind=ConstraintKind(str(data["kind"])),
+            name=data.get("name"),
+            columns=tuple(data.get("columns", ()) or ()),
+            check=data.get("check"),
+            expressions=tuple(
+                (str(expression[0]), str(expression[1]))
+                for expression in (data.get("expressions", ()) or ())
+            ),
+            index_type=str(data.get("index_type", "")),
+            condition=data.get("condition"),
+        )
+
+    @property
+    def semantic_key(self) -> tuple[Any, ...]:
+        """Return the payload used for semantic equality and rename detection."""
+        if self.kind == ConstraintKind.UNIQUE:
+            return (self.kind, self.columns)
+        if self.kind == ConstraintKind.CHECK:
+            return (self.kind, self.check)
+        return (self.kind, self.expressions, self.index_type, self.condition)
+
+
 @dataclass
 class ModelState:
     """Represents a single model's schema during diffing."""
@@ -74,7 +256,9 @@ class ModelState:
     name: str
     db_table: str
     field_states: dict[str, FieldState]
-    meta: dict[str, Any] | None = None  # reserved for future per-model options
+    indexes: list[IndexState] = field(default_factory=list)
+    constraints: list[ConstraintState] = field(default_factory=list)
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the model state to a plain dict (including nested fields)."""
@@ -82,7 +266,9 @@ class ModelState:
             "name": self.name,
             "db_table": self.db_table,
             "field_states": {k: v.to_dict() for k, v in self.field_states.items()},
-            "meta": self.meta or {},
+            "indexes": [index.to_dict() for index in self.indexes],
+            "constraints": [constraint.to_dict() for constraint in self.constraints],
+            "meta": self.meta,
         }
 
     @classmethod
@@ -93,6 +279,13 @@ class ModelState:
             name=data["name"],
             db_table=data["db_table"],
             field_states=fs,
+            indexes=[
+                IndexState.from_dict(value) for value in data.get("indexes", ()) or ()
+            ],
+            constraints=[
+                ConstraintState.from_dict(value)
+                for value in data.get("constraints", ()) or ()
+            ],
             meta=data.get("meta") or {},
         )
 

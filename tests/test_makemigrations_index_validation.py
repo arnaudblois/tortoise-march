@@ -4,7 +4,13 @@ import pytest
 
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.makemigrations import _validate_index_columns
-from tortoisemarch.model_state import FieldState, ModelState, ProjectState
+from tortoisemarch.model_state import (
+    ConstraintState,
+    FieldState,
+    IndexState,
+    ModelState,
+    ProjectState,
+)
 
 
 def test_meta_index_with_unknown_field_raises():
@@ -23,7 +29,7 @@ def test_meta_index_with_unknown_field_raises():
                 to_field="id",
             ),
         },
-        meta={"indexes": [(("author", "created_at"), False)]},
+        indexes=[IndexState(columns=("author", "created_at"))],
     )
     state = ProjectState(model_states={"Book": ms})
 
@@ -52,12 +58,10 @@ def test_meta_index_allows_physical_columns():
                 to_field="id",
             ),
         },
-        meta={
-            "indexes": [
-                (("author_id",), False),
-                (("published_on",), False),
-            ],
-        },
+        indexes=[
+            IndexState(columns=("author_id",)),
+            IndexState(columns=("published_on",)),
+        ],
     )
     state = ProjectState(model_states={"Book": ms})
 
@@ -73,7 +77,7 @@ def test_unique_together_columns_are_validated():
             "id": FieldState(name="id", field_type="UUIDField", primary_key=True),
             "title": FieldState(name="title", field_type="CharField"),
         },
-        meta={"indexes": [(("title", "edition"), True)]},
+        constraints=[ConstraintState(kind="unique", columns=("title", "edition"))],
     )
     state = ProjectState(model_states={"Book": ms})
 
@@ -81,3 +85,28 @@ def test_unique_together_columns_are_validated():
         _validate_index_columns(state)
 
     assert "Book.edition" in str(exc.value)
+
+
+def test_exclusion_constraint_columns_are_validated():
+    """Exclusion constraints should be validated like other model-level objects."""
+    ms = ModelState(
+        name="Booking",
+        db_table="booking",
+        field_states={
+            "room": FieldState(name="room", field_type="IntField"),
+            "timespan": FieldState(name="timespan", field_type="CharField"),
+        },
+        constraints=[
+            ConstraintState(
+                kind="exclude",
+                expressions=(("room", "="), ("resource", "&&")),
+                index_type="gist",
+            ),
+        ],
+    )
+    state = ProjectState(model_states={"Booking": ms})
+
+    with pytest.raises(InvalidMigrationError) as exc:
+        _validate_index_columns(state)
+
+    assert "Booking.resource" in str(exc.value)

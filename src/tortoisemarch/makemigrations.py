@@ -28,7 +28,7 @@ from tortoisemarch.differ import diff_states, score_candidate
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.extractor import extract_project_state
 from tortoisemarch.loader import load_migration_state
-from tortoisemarch.model_state import ProjectState
+from tortoisemarch.model_state import ConstraintKind, ProjectState
 from tortoisemarch.operations import AddField, AlterField, CreateModel, RenameModel
 from tortoisemarch.schema_filtering import FK_TYPES
 from tortoisemarch.writer import preview_migration_filename, write_migration
@@ -51,37 +51,76 @@ def _has_db_initialisable_default(opts: dict[str, Any]) -> bool:
     return default not in (None, "python_callable")
 
 
+def _model_allowed_schema_names(model_state) -> tuple[set[str], set[str]]:
+    """Return the logical and physical names that model-level objects may reference."""
+    logical_names = {fs.name.lower() for fs in model_state.field_states.values()}
+    physical_names: set[str] = set()
+    for field_state in model_state.field_states.values():
+        db_column = field_state.options.get("db_column")
+        column_name = str(db_column).lower() if db_column else field_state.name.lower()
+        physical_names.add(column_name)
+        if (
+            field_state.field_type in FK_TYPES
+            or field_state.field_type == "OneToOneFieldInstance"
+        ):
+            physical_names.add(f"{field_state.name.lower()}_id")
+    return logical_names, physical_names
+
+
+def _append_unknown_columns(
+    problems: list[str],
+    *,
+    model_name: str,
+    columns: tuple[str, ...],
+    logical_names: set[str],
+    physical_names: set[str],
+) -> None:
+    """Record any model-level object columns that do not map to real schema names."""
+    for column in columns:
+        cname = str(column).lower()
+        if cname not in logical_names and cname not in physical_names:
+            problems.append(f"{model_name}.{column}")
+
+
 def _validate_index_columns(state: ProjectState) -> None:
-    """Ensure Meta.indexes/unique_together refer to real fields/columns."""
+    """Ensure model-level schema objects refer to real fields/columns."""
     problems: list[str] = []
     for ms in state.model_states.values():
-        meta = ms.meta or {}
-        indexes = meta.get("indexes")
-        if not indexes:
-            continue
+        logical_names, physical_names = _model_allowed_schema_names(ms)
 
-        logical_names = {fs.name.lower() for fs in ms.field_states.values()}
-        physical_names: set[str] = set()
-        for fs in ms.field_states.values():
-            db_column = fs.options.get("db_column")
-            if db_column:
-                physical_names.add(str(db_column).lower())
-            else:
-                physical_names.add(fs.name.lower())
-            if fs.field_type in FK_TYPES or fs.field_type == "OneToOneFieldInstance":
-                physical_names.add(f"{fs.name.lower()}_id")
+        for index in ms.indexes:
+            _append_unknown_columns(
+                problems,
+                model_name=ms.name,
+                columns=index.columns,
+                logical_names=logical_names,
+                physical_names=physical_names,
+            )
 
-        for cols, _unique in indexes:
-            for col in cols:
-                cname = str(col).lower()
-                if cname not in logical_names and cname not in physical_names:
-                    problems.append(f"{ms.name}.{col}")
+        for constraint in ms.constraints:
+            if constraint.kind == ConstraintKind.UNIQUE:
+                _append_unknown_columns(
+                    problems,
+                    model_name=ms.name,
+                    columns=constraint.columns,
+                    logical_names=logical_names,
+                    physical_names=physical_names,
+                )
+                continue
+            if constraint.kind == ConstraintKind.EXCLUDE:
+                _append_unknown_columns(
+                    problems,
+                    model_name=ms.name,
+                    columns=tuple(column for column, _ in constraint.expressions),
+                    logical_names=logical_names,
+                    physical_names=physical_names,
+                )
 
     if problems:
         msg = (
             "Invalid index definitions detected (unknown fields/columns):\n"
             "  - " + "\n  - ".join(problems) + "\n\n"
-            "Fix Meta.indexes / unique_together to reference existing fields "
+            "Fix model-level indexes / constraints to reference existing fields "
             "or explicit db_column names."
         )
         raise InvalidMigrationError(msg)
@@ -233,7 +272,7 @@ def _validate_safe_alters(operations: list[Any]) -> None:  # noqa: C901
             diffs.remove("db_column")
 
         # Allowed schema changes handled by SchemaEditor.
-        diffs -= {"null", "default", "index"}
+        diffs -= {"null", "default", "index", "unique"}
 
         if diffs:
             keys = ", ".join(sorted(diffs))
