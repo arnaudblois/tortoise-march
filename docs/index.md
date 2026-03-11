@@ -128,6 +128,48 @@ Migration safety:
 - We fail fast if an applied migration file is missing or has been modified.
 - We treat applied migrations as immutable history. To change behavior, add a new migration.
 
+## RunPython Historical Models
+
+`RunPython` can use historical models generated from migration state.
+
+Supported callable signatures are:
+
+- `async def forwards(): ...`
+- `async def forwards(apps): ...`
+- `async def forwards(conn, schema_editor): ...`
+- `async def forwards(conn, schema_editor, apps): ...`
+
+Example:
+
+```python
+from tortoisemarch.base import BaseMigration
+from tortoisemarch.operations import RunPython
+
+
+async def forwards(apps):
+    Book = apps.get_model("Book")
+    for book in await Book.all():
+        book.title = book.title.upper()
+        await book.save(update_fields=["title"])
+
+
+class Migration(BaseMigration):
+    operations = [
+        RunPython(forwards),
+    ]
+```
+
+Why this matters: by the time a data migration runs, your live model code may
+already describe a newer schema. Tortoise March therefore builds temporary ORM
+models from the migration state at that point, so data migration queries line up
+with the schema being migrated.
+
+Current scope:
+
+- historical models are intended for schema-accurate CRUD/query work
+- they are not a perfect reconstruction of every original Python model feature
+- custom methods, managers, and other non-schema Python behavior are not preserved
+
 ## Constraints
 
 Tortoise March treats model-level constraints as first-class schema objects.

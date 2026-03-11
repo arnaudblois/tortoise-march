@@ -968,9 +968,12 @@ class RunPython(Operation):
     The callable signature is:
 
         async def forwards(conn, schema_editor): ...
+        async def forwards(apps): ...
+        async def forwards(conn, schema_editor, apps): ...
 
-    or a synchronous function with the same arguments. It may import models and
-    use the Tortoise ORM as long as the caller has initialised it.
+    or a synchronous function with the same arguments. `apps` exposes
+    schema-accurate historical models when the migration executor provides
+    migration state; otherwise it is ``None``.
     """
 
     func: Callable[[Any, Any], Awaitable[None] | None]
@@ -981,12 +984,13 @@ class RunPython(Operation):
         func: Callable,
         conn: Any,
         schema_editor: Any,
+        apps: Any = None,
     ) -> Any:
-        """Invoke a RunPython callable with 0 args or (conn, schema_editor)."""
+        """Invoke a RunPython callable with supported positional signatures."""
         try:
             sig = inspect.signature(func)
         except (TypeError, ValueError):
-            return func(conn, schema_editor)
+            return func(conn, schema_editor, apps)
 
         params = list(sig.parameters.values())
         if any(p.kind == p.VAR_POSITIONAL for p in params):
@@ -997,22 +1001,32 @@ class RunPython(Operation):
         ]
         if not positional:
             return func()
-        if len(positional) >= 2:  # noqa: PLR2004
+        if len(positional) == 1:
+            return func(apps)
+        if len(positional) == 2:  # noqa: PLR2004
             return func(conn, schema_editor)
+        if len(positional) >= 3:  # noqa: PLR2004
+            return func(conn, schema_editor, apps)
 
         msg = (
-            "RunPython callable must accept 0 or 2 positional arguments "
-            "(conn, schema_editor)."
+            "RunPython callable must accept 0, 1, 2, or 3 positional arguments "
+            "for (), (apps), (conn, schema_editor), or "
+            "(conn, schema_editor, apps)."
         )
         raise TypeError(msg)
 
-    async def apply(self, conn, schema_editor) -> None:
+    async def apply(self, conn, schema_editor, *, apps=None) -> None:
         """Run the forwards callable (sync or async)."""
-        result = self._invoke_runpython_callable(self.func, conn, schema_editor)
+        result = self._invoke_runpython_callable(
+            self.func,
+            conn,
+            schema_editor,
+            apps,
+        )
         if inspect.isawaitable(result):
             await result
 
-    async def unapply(self, conn, schema_editor) -> None:
+    async def unapply(self, conn, schema_editor, *, apps=None) -> None:
         """Run the reverse callable if provided, else refuse to reverse."""
         if self.reverse_func is None:
             msg = "RunPython operation has no reverse callable"
@@ -1022,6 +1036,7 @@ class RunPython(Operation):
             self.reverse_func,
             conn,
             schema_editor,
+            apps,
         )
         if inspect.isawaitable(result):
             await result

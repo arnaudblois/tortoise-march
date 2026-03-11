@@ -9,13 +9,19 @@ import asyncpg
 import click
 from tortoise import Tortoise
 
+from tortoisemarch.base import BaseMigration
 from tortoisemarch.conf import resolve_runtime_config
 from tortoisemarch.exceptions import (
     ConfigError,
     InvalidMigrationError,
     MigrationConnectionError,
 )
-from tortoisemarch.loader import import_module_from_path, iter_migration_files
+from tortoisemarch.loader import (
+    apply_migration_to_state,
+    import_module_from_path,
+    iter_migration_files,
+)
+from tortoisemarch.model_state import ProjectState
 from tortoisemarch.recorder import MigrationRecorder
 from tortoisemarch.schema_editor import PostgresSchemaEditor
 from tortoisemarch.utils import safe_module_fragment
@@ -150,6 +156,26 @@ def _current_applied_index(applied: set[str], all_names: list[str]) -> int:
     return current_idx
 
 
+def _load_state_for_names(
+    ordered_names: list[str],
+    *,
+    name_to_file: dict[str, Path],
+    name_to_label: dict[str, str | None],
+) -> ProjectState:
+    """Rebuild the project state for the given ordered migration names."""
+    state = ProjectState()
+    for index, name in enumerate(ordered_names):
+        file = name_to_file[name]
+        label = name_to_label[name]
+        prefix = safe_module_fragment(label) if label else "main"
+        module = import_module_from_path(
+            file,
+            f"tm_mig_state_{index}_{prefix}_{file.stem}",
+        )
+        apply_migration_to_state(state, module)
+    return state
+
+
 async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
     tortoise_conf: dict | None = None,
     location: Path | None = None,
@@ -243,6 +269,7 @@ async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
             target_name = resolve_target_name(target, all_names) if target else None
 
             direction, names = plan_route(applied, all_names, target_name)
+            current_idx = _current_applied_index(applied, all_names)
 
             if direction == "noop":
                 if target_name is None:
@@ -252,6 +279,11 @@ async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 return "" if sql else None
 
             if direction == "forward":
+                state = _load_state_for_names(
+                    all_names[: current_idx + 1],
+                    name_to_file=name_to_file,
+                    name_to_label=name_to_label,
+                )
                 for name in names:
                     file = name_to_file[name]
                     label = name_to_label[name]
@@ -288,13 +320,26 @@ async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
                     async with conn._in_transaction():  # noqa: SLF001
                         tx = Tortoise.get_connection("default")
-                        await Migration.apply(tx, schema_editor)
+                        if issubclass(Migration, BaseMigration):
+                            await Migration.apply(
+                                tx,
+                                schema_editor,
+                                state=state,
+                                connection_name="default",
+                            )
+                        else:
+                            await Migration.apply(tx, schema_editor)
                         await MigrationRecorder.record_applied(
                             name,
                             current_checksums[name],
                         )
                     click.echo(f"✅ Migration {name} applied")
             else:
+                state = _load_state_for_names(
+                    all_names[: current_idx + 1],
+                    name_to_file=name_to_file,
+                    name_to_label=name_to_label,
+                )
                 for name in names:
                     file = name_to_file[name]
                     label = name_to_label[name]
@@ -337,10 +382,25 @@ async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         click.echo(f"⚡️ Marked {name} as unapplied (fake)")
                         continue
 
+                    previous_state = _load_state_for_names(
+                        all_names[: all_names.index(name)],
+                        name_to_file=name_to_file,
+                        name_to_label=name_to_label,
+                    )
                     async with conn._in_transaction():  # noqa: SLF001
                         tx = Tortoise.get_connection("default")
-                        await Migration.unapply(tx, schema_editor)
+                        if issubclass(Migration, BaseMigration):
+                            await Migration.unapply(
+                                tx,
+                                schema_editor,
+                                state=state,
+                                previous_state=previous_state,
+                                connection_name="default",
+                            )
+                        else:
+                            await Migration.unapply(tx, schema_editor)
                         await MigrationRecorder.unrecord_applied(name)
+                    state = previous_state
                     click.echo(f"✅ Rolled back {name}")
 
     except (OSError, asyncpg.PostgresError) as exc:

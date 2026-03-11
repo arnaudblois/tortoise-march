@@ -1,12 +1,14 @@
 """Base class used for migration files."""
 
+from copy import deepcopy
 from typing import ClassVar
 
 from tortoise import BaseDBAsyncClient
 
 from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.historical_models import historical_apps_from_state
 from tortoisemarch.model_state import ProjectState
-from tortoisemarch.operations import Operation
+from tortoisemarch.operations import Operation, RunPython
 from tortoisemarch.schema_editor import SchemaEditor
 
 
@@ -46,17 +48,47 @@ class BaseMigration:
 
     # ----------------------------- actions ------------------------------
 
+    @staticmethod
+    def _replace_state(target: ProjectState, source: ProjectState) -> None:
+        """Replace one project state's model mapping with another."""
+        target.model_states = deepcopy(source.model_states)
+
     @classmethod
-    async def apply(cls, conn: BaseDBAsyncClient, schema_editor: SchemaEditor) -> None:
-        """Apply all operations in order."""
+    async def apply(
+        cls,
+        conn: BaseDBAsyncClient,
+        schema_editor: SchemaEditor,
+        *,
+        state: ProjectState | None = None,
+        connection_name: str = "default",
+    ) -> None:
+        """Apply all operations in order.
+
+        When `state` is provided, we keep it in sync after each successful
+        operation so `RunPython` can access schema-accurate historical models.
+        """
         for op in cls._validated_ops():
-            await op.apply(conn, schema_editor)
+            if isinstance(op, RunPython) and state is not None:
+                with historical_apps_from_state(
+                    state,
+                    connection_name=connection_name,
+                ) as apps:
+                    await op.apply(conn, schema_editor, apps=apps)
+            else:
+                await op.apply(conn, schema_editor)
+
+            if state is not None:
+                op.mutate_state(state)
 
     @classmethod
     async def unapply(
         cls,
         conn: BaseDBAsyncClient,
         schema_editor: SchemaEditor,
+        *,
+        state: ProjectState | None = None,
+        previous_state: ProjectState | None = None,
+        connection_name: str = "default",
     ) -> None:
         """Reverse all operations in reverse order, if reversible.
 
@@ -64,8 +96,37 @@ class BaseMigration:
             NotReversibleMigrationError: if any operation cannot be reversed.
 
         """
-        for op in reversed(cls._validated_ops()):
-            await op.unapply(conn, schema_editor)
+        ops = cls._validated_ops()
+        if state is None:
+            for op in reversed(ops):
+                await op.unapply(conn, schema_editor)
+            return
+
+        if previous_state is None:
+            msg = "BaseMigration.unapply requires previous_state when state is tracked."
+            raise InvalidMigrationError(msg)
+
+        snapshots: list[ProjectState] = []
+        working_state = deepcopy(previous_state)
+        for op in ops:
+            op.mutate_state(working_state)
+            snapshots.append(deepcopy(working_state))
+
+        for op, snapshot in zip(
+            reversed(ops),
+            reversed(snapshots),
+            strict=True,
+        ):
+            if isinstance(op, RunPython):
+                with historical_apps_from_state(
+                    snapshot,
+                    connection_name=connection_name,
+                ) as apps:
+                    await op.unapply(conn, schema_editor, apps=apps)
+            else:
+                await op.unapply(conn, schema_editor)
+
+        cls._replace_state(state, previous_state)
 
     @classmethod
     def mutate_state(cls, state: ProjectState) -> None:

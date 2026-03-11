@@ -445,6 +445,224 @@ async def test_runpython_data_migration_uses_orm(tmp_path: Path):
     await Tortoise.close_connections()
 
 
+async def test_runpython_uses_historical_models_for_schema_state(
+    tmp_path: Path,
+):
+    """RunPython should see the schema state at that migration step."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    def write_models(code: str) -> None:
+        """Overwrite models and clear import/bytecode caches."""
+        (models_dir / "__init__.py").write_text(code)
+
+        pycache_dir = models_dir / "__pycache__"
+        if pycache_dir.exists():
+            for file in pycache_dir.glob("__init__.*.pyc"):
+                file.unlink()
+
+        importlib.invalidate_caches()
+        sys.modules.pop("models", None)
+
+    try:
+        write_models(
+            textwrap.dedent(
+                """
+                from uuid import uuid4
+                from tortoise import fields, models
+
+                class Book(models.Model):
+                    id = fields.UUIDField(primary_key=True, default=uuid4)
+                    title = fields.CharField(max_length=200)
+                """,
+            ),
+        )
+        tortoise_orm = _tortoise_conf("models")
+        await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
+        await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+        await Tortoise.init(config=tortoise_orm)
+        from models import Book  # noqa: PLC0415
+
+        await Book.create(title="Dune")
+        await Tortoise.close_connections()
+
+        # The live model no longer matches the database schema here: it expects
+        # `heading`, while the DB still has `title`. RunPython must therefore use
+        # the migration state instead of importing the live model.
+        write_models(
+            textwrap.dedent(
+                """
+                from uuid import uuid4
+                from tortoise import fields, models
+
+                class Book(models.Model):
+                    id = fields.UUIDField(primary_key=True, default=uuid4)
+                    heading = fields.CharField(max_length=200)
+                    subtitle = fields.CharField(max_length=200, null=True)
+                """,
+            ),
+        )
+
+        (migrations_dir / "0002_add_subtitle_and_backfill.py").write_text(
+            textwrap.dedent(
+                """
+                from tortoisemarch.base import BaseMigration
+                from tortoisemarch.operations import AddField, RunPython
+
+                async def forwards(apps):
+                    Book = apps.get_model("Book")
+                    for book in await Book.all().order_by("title"):
+                        book.subtitle = book.title.upper()
+                        await book.save(update_fields=["subtitle"])
+
+                class Migration(BaseMigration):
+                    operations = [
+                        AddField(
+                            model_name="Book",
+                            db_table="book",
+                            field_name="subtitle",
+                            field_type="CharField",
+                            options={"max_length": 200, "null": True},
+                        ),
+                        RunPython(forwards),
+                    ]
+                """,
+            ),
+        )
+
+        await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+        async with tortoise_context(tortoise_orm):
+            conn = Tortoise.get_connection("default")
+            rows = await conn.execute_query_dict(
+                'SELECT title, subtitle FROM "book" ORDER BY title',
+                [],
+            )
+
+        assert rows == [{"title": "Dune", "subtitle": "DUNE"}]
+    finally:
+        sys.path.remove(str(tmp_path))
+
+
+async def test_runpython_reverse_uses_historical_models(tmp_path: Path):
+    """Rollback RunPython should see the pre-unapply historical schema."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    def write_models(code: str) -> None:
+        """Overwrite models and clear import/bytecode caches."""
+        (models_dir / "__init__.py").write_text(code)
+
+        pycache_dir = models_dir / "__pycache__"
+        if pycache_dir.exists():
+            for file in pycache_dir.glob("__init__.*.pyc"):
+                file.unlink()
+
+        importlib.invalidate_caches()
+        sys.modules.pop("models", None)
+
+    try:
+        write_models(
+            textwrap.dedent(
+                """
+                from uuid import uuid4
+                from tortoise import fields, models
+
+                class Book(models.Model):
+                    id = fields.UUIDField(primary_key=True, default=uuid4)
+                    title = fields.CharField(max_length=200)
+                """,
+            ),
+        )
+        tortoise_orm = _tortoise_conf("models")
+        await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
+        await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+        await Tortoise.init(config=tortoise_orm)
+        from models import Book  # noqa: PLC0415
+
+        await Book.create(title="dune")
+        await Tortoise.close_connections()
+
+        write_models(
+            textwrap.dedent(
+                """
+                from uuid import uuid4
+                from tortoise import fields, models
+
+                class Book(models.Model):
+                    id = fields.UUIDField(primary_key=True, default=uuid4)
+                    heading = fields.CharField(max_length=200)
+                """,
+            ),
+        )
+
+        (migrations_dir / "0002_uppercase_titles.py").write_text(
+            textwrap.dedent(
+                """
+                from tortoisemarch.base import BaseMigration
+                from tortoisemarch.operations import RunPython
+
+                async def forwards(apps):
+                    Book = apps.get_model("Book")
+                    for book in await Book.all():
+                        book.title = book.title.upper()
+                        await book.save(update_fields=["title"])
+
+                async def backwards(apps):
+                    Book = apps.get_model("Book")
+                    for book in await Book.all():
+                        book.title = book.title.lower()
+                        await book.save(update_fields=["title"])
+
+                class Migration(BaseMigration):
+                    operations = [
+                        RunPython(forwards, reverse_func=backwards),
+                    ]
+                """,
+            ),
+        )
+
+        await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+        async with tortoise_context(tortoise_orm):
+            conn = Tortoise.get_connection("default")
+            rows = await conn.execute_query_dict(
+                'SELECT title FROM "book" ORDER BY title',
+                [],
+            )
+        assert rows == [{"title": "DUNE"}]
+
+        await migrate(
+            tortoise_conf=tortoise_orm,
+            location=migrations_dir,
+            target="0001_initial",
+        )
+
+        async with tortoise_context(tortoise_orm):
+            conn = Tortoise.get_connection("default")
+            rows = await conn.execute_query_dict(
+                'SELECT title FROM "book" ORDER BY title',
+                [],
+            )
+        assert rows == [{"title": "dune"}]
+    finally:
+        sys.path.remove(str(tmp_path))
+
+
 async def test_migrate_to_target_forward_and_backward(tmp_path: Path):  # noqa: PLR0915
     """Migrate up to a target and back down again."""
     migrations_dir = tmp_path / "migrations"

@@ -433,6 +433,44 @@ async def test_runpython_accepts_zero_arg_callable():
     assert called["value"] is True
 
 
+async def test_runpython_accepts_apps_only_callable():
+    """RunPython should provide historical apps to one-arg callables."""
+    called = {"value": None}
+
+    async def forwards(apps):
+        called["value"] = apps
+
+    marker = object()
+    op = RunPython(forwards)
+    await op.apply(None, None, apps=marker)
+
+    assert called["value"] is marker
+
+
+async def test_runpython_accepts_three_arg_callable():
+    """RunPython should support (conn, schema_editor, apps)."""
+    called: dict[str, object | None] = {
+        "conn": None,
+        "schema_editor": None,
+        "apps": None,
+    }
+
+    async def forwards(conn, schema_editor, apps):
+        called["conn"] = conn
+        called["schema_editor"] = schema_editor
+        called["apps"] = apps
+
+    marker = object()
+    op = RunPython(forwards)
+    await op.apply("conn", "schema_editor", apps=marker)
+
+    assert called == {
+        "conn": "conn",
+        "schema_editor": "schema_editor",
+        "apps": marker,
+    }
+
+
 async def test_createindex_and_removeindex_to_code_and_mutation():
     """CreateIndex/RemoveIndex should render code and update index state."""
     state = ProjectState(
