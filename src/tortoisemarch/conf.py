@@ -26,6 +26,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from tortoisemarch.exceptions import ConfigError
+
 
 def _resolve_attr(spec: str) -> Any:
     """Resolve 'module.attr' or 'module:attr[.subattr...]' to a Python object.
@@ -63,6 +65,7 @@ def _read_pyproject(pyproject_path: Path) -> dict | None:
 
 
 def _read_cfg(path: Path) -> dict[str, Any] | None:
+    """Read `.tortoisemarch.cfg` and return its section as a plain dict."""
     if not path.exists():
         return None
     parser = configparser.ConfigParser()
@@ -89,7 +92,7 @@ def _load_raw_config(pyproject_path: Path) -> dict[str, Any]:
                 "Missing [tool.tortoisemarch] section in pyproject.toml "
                 "and no .tortoisemarch.cfg found."
             )
-            raise KeyError(msg)
+            raise ConfigError(msg)
     return cfg
 
 
@@ -117,16 +120,16 @@ def _resolve_tortoise_orm(cfg: dict[str, Any]) -> dict[str, Any]:
             "Missing 'tortoise_orm' in config and no "
             "TORTOISEMARCH_TORTOISE_ORM env var set."
         )
-        raise KeyError(msg)
+        raise ConfigError(msg)
 
     try:
         tortoise_obj = _resolve_attr(tortoise_spec)
     except (ModuleNotFoundError, AttributeError) as exc:
-        msg = ImportError(
+        msg = (
             f"Could not resolve tortoise_orm spec '{tortoise_spec}'. "
             "Use 'package.module.ATTRIBUTE' or 'package.module:ATTRIBUTE[.subattr]'.",
         )
-        raise ImportError(msg) from exc
+        raise ConfigError(msg) from exc
 
     tortoise_orm = tortoise_obj() if callable(tortoise_obj) else tortoise_obj
     if not isinstance(tortoise_orm, Mapping):
@@ -134,7 +137,7 @@ def _resolve_tortoise_orm(cfg: dict[str, Any]) -> dict[str, Any]:
             f"Resolved tortoise_orm '{tortoise_spec}' is not a mapping "
             f"(got {type(tortoise_orm).__name__})."
         )
-        raise TypeError(msg)
+        raise ConfigError(msg)
     return dict(tortoise_orm)
 
 
@@ -160,7 +163,7 @@ def _parse_include_locations(
         label, path = _parse_include_entry(entry, base_dir=base_dir)
         if label in seen_labels:
             msg = f"Duplicate include_locations label: {label!r}"
-            raise TypeError(msg)
+            raise ConfigError(msg)
         seen_labels.add(label)
         include_locations.append({"label": label, "path": path})
     return include_locations
@@ -173,12 +176,12 @@ def _normalize_include_raw(value: Any) -> list[Any]:
             value = json.loads(value)
         except json.JSONDecodeError as exc:
             msg = "include_locations in .tortoisemarch.cfg must be valid JSON."
-            raise TypeError(msg) from exc
+            raise ConfigError(msg) from exc
     if value is None:
         value = []
     if not isinstance(value, list):
         msg = "'include_locations' must be a list in [tool.tortoisemarch]"
-        raise TypeError(msg)
+        raise ConfigError(msg)
     return value
 
 
@@ -195,14 +198,14 @@ def _parse_include_entry(entry: Any, *, base_dir: Path) -> tuple[str, Path]:
             "Each include_locations entry must be a string path or "
             "a table with 'label' and 'path'."
         )
-        raise TypeError(msg)
+        raise ConfigError(msg)
 
     if not label or not isinstance(label, str):
         msg = "include_locations entries require a string 'label'."
-        raise TypeError(msg)
+        raise ConfigError(msg)
     if not path_str or not isinstance(path_str, str):
         msg = f"include_locations[{label!r}] requires a string 'path'."
-        raise TypeError(msg)
+        raise ConfigError(msg)
     return label, (base_dir / Path(path_str)).resolve()
 
 
@@ -233,8 +236,7 @@ def load_config(pyproject_path: Path | None = None) -> dict[str, Any]:
               containing `pyproject.toml` when not configured.
 
     Raises:
-        KeyError, TypeError, FileNotFoundError with clear messages when configuration
-        is missing or invalid.
+        ConfigError: If configuration is missing or invalid.
 
     """
     pyproject_path = pyproject_path or Path("pyproject.toml")

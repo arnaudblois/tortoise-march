@@ -27,6 +27,15 @@ from tortoisemarch.schema_editor import PostgresSchemaEditor
 from tortoisemarch.utils import safe_module_fragment
 
 
+def _coerce_sql_statements(statements: str | list[str] | None) -> list[str]:
+    """Normalize SQL preview results to a flat list of strings."""
+    if statements is None:
+        return []
+    if isinstance(statements, str):
+        return [statements]
+    return list(statements)
+
+
 def _format_db_target(conf: dict | None) -> str:
     """Best-effort extraction of the DB target string for error messages."""
     default_conn: Any = (conf or {}).get("connections", {}).get("default")
@@ -356,23 +365,23 @@ async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         raise InvalidMigrationError(msg)
 
                     if sql:
-                        # Capture SQL emitted during unapply without executing.
-                        class _Recorder:
-                            def __init__(self):
-                                self.statements: list[str] = []
-
-                            async def execute_script(self, sql_text: str) -> None:
-                                for stmt in sql_text.split("\n"):
-                                    if stmt.strip():
-                                        self.statements.append(stmt)
-
-                            async def execute(self, sql_text: str) -> None:
-                                self.statements.append(sql_text)
-
-                        recorder = _Recorder()
-                        await Migration.unapply(recorder, schema_editor)
-                        sql_accum.extend(recorder.statements)
-                        for stmt in recorder.statements:
+                        if issubclass(Migration, BaseMigration):
+                            statements = await Migration.unapply_to_sql(
+                                conn,
+                                schema_editor,
+                            )
+                        else:
+                            render_unapply = getattr(Migration, "to_sql_unapply", None)
+                            if render_unapply is None or not callable(render_unapply):
+                                statements = [
+                                    "-- No rollback SQL preview for custom migration",
+                                ]
+                            else:
+                                statements = _coerce_sql_statements(
+                                    await render_unapply(conn, schema_editor),
+                                )
+                        sql_accum.extend(statements)
+                        for stmt in statements:
                             click.echo(stmt)
                         click.echo(f"💡 Rollback {name} SQL displayed (not executed)")
                         continue

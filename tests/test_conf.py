@@ -2,7 +2,10 @@
 
 from pathlib import Path
 
-from tortoisemarch.conf import resolve_runtime_config
+import pytest
+
+from tortoisemarch.conf import load_config, resolve_runtime_config
+from tortoisemarch.exceptions import ConfigError
 
 
 def test_resolve_runtime_config_allows_location_override(monkeypatch) -> None:
@@ -62,3 +65,11 @@ def test_resolve_runtime_config_skips_project_config_when_fully_explicit(
     assert tortoise_conf == explicit_conf
     assert location == Path("custom-migrations")
     assert include_locations == []
+
+
+def test_load_config_raises_config_error_when_project_config_is_missing(
+    tmp_path: Path,
+) -> None:
+    """We raise ConfigError for missing project configuration."""
+    with pytest.raises(ConfigError, match="Missing \\[tool\\.tortoisemarch\\]"):
+        load_config(tmp_path / "pyproject.toml")

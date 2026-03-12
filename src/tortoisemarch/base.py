@@ -164,3 +164,32 @@ class BaseMigration:
                 statements.extend(stmts)
 
         return statements
+
+    @classmethod
+    async def unapply_to_sql(
+        cls,
+        conn: BaseDBAsyncClient,
+        schema_editor: SchemaEditor,
+    ) -> list[str]:
+        """Render rollback SQL for all operations without executing them.
+
+        We use explicit rollback SQL renderers here instead of calling
+        `unapply(...)` with a recorder stub. That keeps `--sql` previews
+        side-effect free even when a migration contains `RunPython`.
+        """
+        statements: list[str] = []
+        for op in reversed(cls._validated_ops()):
+            try:
+                stmts = await op.to_sql_unapply(conn, schema_editor)
+            except NotImplementedError:
+                statements.append(
+                    f"-- No rollback SQL preview for {op.__class__.__name__}",
+                )
+                continue
+
+            if isinstance(stmts, str):
+                statements.append(stmts)
+            elif stmts:
+                statements.extend(stmts)
+
+        return statements

@@ -201,6 +201,57 @@ async def test_unapply_sql_for_create_and_addfield():
 
 
 @pytest.mark.asyncio
+async def test_unapply_to_sql_skips_runpython_side_effects():
+    """Rollback SQL previews must not execute reverse RunPython callables."""
+    seen: list[str | None] = []
+
+    async def backwards(apps):
+        seen.append(apps)
+
+    class Migration(BaseMigration):
+        operations: ClassVar[list[Operation]] = [
+            RunPython(lambda: None, reverse_func=backwards),
+        ]
+
+    statements = await Migration.unapply_to_sql(
+        conn=None,
+        schema_editor=PostgresSchemaEditor(),
+    )
+
+    assert seen == []
+    assert statements == ["-- No SQL preview for RunPython reverse callable"]
+
+
+@pytest.mark.asyncio
+async def test_unapply_sql_for_addfield_uses_db_column_override():
+    """Rollback SQL should target the physical column name when it is overridden."""
+
+    class Migration(BaseMigration):
+        operations: ClassVar[list[Operation]] = [
+            AddField(
+                model_name="Book",
+                db_table="book",
+                field_name="author",
+                field_type="ForeignKeyFieldInstance",
+                options={
+                    "db_column": "author_id",
+                    "related_table": "author",
+                    "to_field": "id",
+                    "on_delete": "CASCADE",
+                    "referenced_type": "UUIDField",
+                },
+            ),
+        ]
+
+    statements = await Migration.unapply_to_sql(
+        conn=None,
+        schema_editor=PostgresSchemaEditor(),
+    )
+
+    assert statements == ['ALTER TABLE "book" DROP COLUMN IF EXISTS "author_id";']
+
+
+@pytest.mark.asyncio
 async def test_tortoise_context_passes_through_app_models(monkeypatch):
     """Migration context should pass app model declarations through unchanged."""
     captured: dict[str, dict] = {}

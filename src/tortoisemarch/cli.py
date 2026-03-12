@@ -25,7 +25,7 @@ from pathlib import Path
 
 import click
 
-from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.exceptions import TortoiseMarchError
 from tortoisemarch.makemigrations import makemigrations
 from tortoisemarch.migrate import migrate
 
@@ -184,7 +184,7 @@ def main() -> None:
         else:
             msg = f"Unknown command: {args.command!r}"
             raise SystemExit(msg)
-    except InvalidMigrationError as exc:
+    except TortoiseMarchError as exc:
         click.secho(str(exc), fg="red", err=True)
         raise SystemExit(1) from exc
     except KeyboardInterrupt as error:

@@ -140,6 +140,12 @@ class Operation(ABC):
         msg = f"{self.__class__.__name__} has no SQL renderer"
         raise NotImplementedError(msg)
 
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL statements to reverse this operation (no execution)."""
+        _ = conn, schema_editor
+        msg = f"{self.__class__.__name__} has no rollback SQL renderer"
+        raise NotImplementedError(msg)
+
 
 # ---------------------------------------------------------------------------
 
@@ -165,6 +171,11 @@ class CreateModel(Operation):
         """Return SQL to create the table."""
         _ = conn
         return [schema_editor.sql_create_model(self.db_table, self.fields)]
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to drop the created table."""
+        _ = conn
+        return [schema_editor.sql_drop_model(self.db_table)]
 
     @classmethod
     def from_model_state(cls, model_state: ModelState) -> "CreateModel":
@@ -249,6 +260,13 @@ class RenameModel(Operation):
             return []
         return [schema_editor.sql_rename_model(self.old_db_table, self.new_db_table)]
 
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to rename the table back, if required."""
+        _ = conn
+        if self.old_db_table == self.new_db_table:
+            return []
+        return [schema_editor.sql_rename_model(self.new_db_table, self.old_db_table)]
+
     def mutate_state(self, state: ProjectState) -> None:
         """Update ProjectState to reflect this model + table rename."""
         ms = state.model_states.pop(self.old_name)
@@ -304,6 +322,12 @@ class RemoveModel(Operation):
         _ = conn
         return [schema_editor.sql_drop_model(self.db_table)]
 
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Refuse rollback SQL rendering for an irreversible model removal."""
+        _ = conn, schema_editor
+        msg = "RemoveModel cannot be reversed"
+        raise NotReversibleMigrationError(msg)
+
     def mutate_state(self, state: ProjectState) -> None:
         """Remove the model from the in-memory state."""
         state.model_states.pop(self.name, None)
@@ -342,6 +366,7 @@ class AddField(Operation):
             conn,
             self.db_table,
             self.field_name,
+            db_column=self.options.get("db_column"),
         )
 
     async def to_sql(self, conn, schema_editor) -> list[str]:
@@ -353,6 +378,17 @@ class AddField(Operation):
                 self.field_name,
                 self.field_type,
                 self.options,
+            ),
+        ]
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to drop the added column."""
+        _ = conn
+        return [
+            schema_editor.sql_remove_field(
+                self.db_table,
+                self.field_name,
+                db_column=self.options.get("db_column"),
             ),
         ]
 
@@ -414,6 +450,12 @@ class RemoveField(Operation):
                 db_column=self.db_column,
             ),
         ]
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Refuse rollback SQL rendering for an irreversible field removal."""
+        _ = conn, schema_editor
+        msg = "RemoveField cannot be reversed."
+        raise NotReversibleMigrationError(msg)
 
     def mutate_state(self, state: ProjectState) -> None:
         """Remove the field from the in-memory state."""
@@ -478,6 +520,17 @@ class AlterField(Operation):
             self.old_options,
             self.new_options,
             new_name=self.new_name,
+        )
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to reverse the column alterations."""
+        _ = conn
+        return schema_editor.sql_alter_field(
+            self.db_table,
+            self.new_name or self.field_name,
+            self.new_options,
+            self.old_options,
+            new_name=self.field_name if self.new_name else None,
         )
 
     def mutate_state(self, state: ProjectState) -> None:
@@ -607,6 +660,19 @@ class RenameField(Operation):
             ),
         ]
 
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to rename the column back."""
+        _ = conn
+        return [
+            schema_editor.sql_rename_field(
+                self.db_table,
+                self.new_name,
+                self.old_name,
+                old_db_column=self.new_db_column,
+                new_db_column=self.old_db_column,
+            ),
+        ]
+
     def mutate_state(self, state: ProjectState) -> None:
         """Rename the field inside the in-memory state."""
         model = state.model_states[self.model_name]
@@ -678,6 +744,11 @@ class CreateIndex(Operation):
             ),
         ]
 
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to drop the created index."""
+        _ = conn
+        return [schema_editor.sql_drop_index(name=self.name)]
+
     def mutate_state(self, state: ProjectState) -> None:
         """Track index metadata in the in-memory state."""
         model = state.model_states[self.model_name]
@@ -734,6 +805,21 @@ class RemoveIndex(Operation):
         """Return SQL to drop the index."""
         _ = conn
         return [schema_editor.sql_drop_index(name=self.name)]
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to recreate the removed index."""
+        _ = conn
+        if self.columns is None:
+            msg = "Cannot recreate index without columns."
+            raise NotReversibleMigrationError(msg)
+        return [
+            schema_editor.sql_create_index(
+                db_table=self.db_table,
+                name=self.name,
+                columns=self.columns,
+                unique=self.unique,
+            ),
+        ]
 
     def mutate_state(self, state: ProjectState) -> None:
         """Remove index metadata from the in-memory state."""
@@ -815,6 +901,16 @@ class AddConstraint(Operation):
             ),
         ]
 
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to drop the created constraint."""
+        _ = conn
+        return [
+            schema_editor.sql_drop_constraint(
+                db_table=self.db_table,
+                name=self.name,
+            ),
+        ]
+
     def mutate_state(self, state: ProjectState) -> None:
         """Track the constraint metadata in the in-memory state."""
         model = state.model_states[self.model_name]
@@ -868,6 +964,16 @@ class RemoveConstraint(Operation):
             schema_editor.sql_drop_constraint(
                 db_table=self.db_table,
                 name=self.name,
+            ),
+        ]
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to recreate the removed constraint."""
+        _ = conn
+        return [
+            schema_editor.sql_add_constraint(
+                db_table=self.db_table,
+                constraint=self.constraint,
             ),
         ]
 
@@ -931,6 +1037,17 @@ class RenameConstraint(Operation):
                 db_table=self.db_table,
                 old_name=self.old_name,
                 new_name=self.new_name,
+            ),
+        ]
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to rename the constraint back."""
+        _ = conn
+        return [
+            schema_editor.sql_rename_constraint(
+                db_table=self.db_table,
+                old_name=self.new_name,
+                new_name=self.old_name,
             ),
         ]
 
@@ -1049,6 +1166,14 @@ class RunPython(Operation):
         """RunPython is a data-only operation, so it emits no SQL."""
         _ = conn, schema_editor
         return []
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return a comment stub instead of executing reverse Python code."""
+        _ = conn, schema_editor
+        if self.reverse_func is None:
+            msg = "RunPython operation has no reverse callable"
+            raise NotReversibleMigrationError(msg)
+        return ["-- No SQL preview for RunPython reverse callable"]
 
     def to_code(self) -> str:
         """Return a best-effort code repr for this operation.

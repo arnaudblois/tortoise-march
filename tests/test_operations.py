@@ -74,7 +74,7 @@ def test_remove_model_mutates_state():
     )
     op = RemoveModel(name="User", db_table="user")
     op.mutate_state(state)
-    assert "user" not in state.model_states
+    assert "User" not in state.model_states
 
 
 def test_add_field_mutates_state():
@@ -505,6 +505,27 @@ async def test_createindex_and_removeindex_to_code_and_mutation():
     assert "DROP INDEX" in sql_drop[0]
     ri.mutate_state(state)
     assert not state.model_states["Item"].indexes
+
+
+async def test_addfield_to_sql_unapply_uses_db_column_override():
+    """Rollback SQL should use the configured physical column name."""
+    add = AddField(
+        model_name="Book",
+        db_table="book",
+        field_name="author",
+        field_type="ForeignKeyFieldInstance",
+        options={
+            "db_column": "author_id",
+            "related_table": "author",
+            "to_field": "id",
+            "on_delete": "CASCADE",
+            "referenced_type": "UUIDField",
+        },
+    )
+
+    sql = await add.to_sql_unapply(conn=None, schema_editor=PostgresSchemaEditor())
+
+    assert sql == ['ALTER TABLE "book" DROP COLUMN IF EXISTS "author_id";']
 
 
 async def test_constraint_operations_render_and_mutate_state():
