@@ -189,6 +189,10 @@ class SchemaEditor(ABC):
         """Return SQL to drop an index by name."""
 
     @abstractmethod
+    def sql_rename_index(self, old_name: str, new_name: str) -> str:
+        """Return SQL to rename an index by name."""
+
+    @abstractmethod
     async def create_index(
         self,
         conn: BaseDBAsyncClient,
@@ -203,6 +207,15 @@ class SchemaEditor(ABC):
     @abstractmethod
     async def drop_index(self, conn: BaseDBAsyncClient, name: str) -> None:
         """Drop an index."""
+
+    @abstractmethod
+    async def rename_index(
+        self,
+        conn: BaseDBAsyncClient,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        """Rename an index."""
 
     @abstractmethod
     def sql_add_constraint(self, db_table: str, constraint: ConstraintState) -> str:
@@ -387,6 +400,7 @@ class PostgresSchemaEditor(SchemaEditor):
 
     def _column_def(
         self,
+        db_table: str,
         name: str,
         field_type: str,
         options: dict[str, Any],
@@ -413,7 +427,12 @@ class PostgresSchemaEditor(SchemaEditor):
         # options omitted `unique=True`, because one-to-one semantics require it.
         is_unique = bool(options.get("unique")) or field_type == "OneToOneFieldInstance"
         if is_unique and not options.get("primary_key"):
-            parts.append("UNIQUE")
+            constraint = ConstraintState(kind=ConstraintKind.UNIQUE, columns=(colname,))
+            parts.append(
+                "CONSTRAINT "
+                f"{self._q_ident(constraint_db_name(db_table, constraint))} "
+                "UNIQUE",
+            )
 
         # ---- default -----------------------------------------------------
 
@@ -458,7 +477,10 @@ class PostgresSchemaEditor(SchemaEditor):
         fields: list[tuple[str, str, dict[str, Any]]],
     ) -> str:
         """Write the SQL to create a model."""
-        cols = [self._column_def(name, ftype, opts) for name, ftype, opts in fields]
+        cols = [
+            self._column_def(db_table, name, ftype, opts)
+            for name, ftype, opts in fields
+        ]
         col_sql = ", ".join(cols)
         statements = [
             f"CREATE TABLE {self._q_ident(db_table.lower())} ({col_sql});",
@@ -491,7 +513,7 @@ class PostgresSchemaEditor(SchemaEditor):
         """Return the SQL to add a column to the table."""
         sql = (
             f"ALTER TABLE {self._q_ident(db_table.lower())} "
-            f"ADD COLUMN {self._column_def(field_name, field_type, options)};"
+            f"ADD COLUMN {self._column_def(db_table, field_name, field_type, options)};"
         )
         if self._should_index(options):
             colname = self._resolve_column_name(field_name, field_type, options)
@@ -738,6 +760,13 @@ class PostgresSchemaEditor(SchemaEditor):
         """Return SQL to drop an index by name."""
         return self._render_drop_index_sql(name)
 
+    def sql_rename_index(self, old_name: str, new_name: str) -> str:
+        """Return SQL to rename an index by name."""
+        return (
+            f"ALTER INDEX {self._q_ident(old_name)} "
+            f"RENAME TO {self._q_ident(new_name)};"
+        )
+
     def sql_add_constraint(self, db_table: str, constraint: ConstraintState) -> str:
         """Return SQL to add a model-level constraint."""
         return (
@@ -877,6 +906,16 @@ class PostgresSchemaEditor(SchemaEditor):
     async def drop_index(self, conn: BaseDBAsyncClient, name: str) -> None:
         """Execute SQL to drop an index."""
         sql = self.sql_drop_index(name=name)
+        await self._execute(conn, sql)
+
+    async def rename_index(
+        self,
+        conn: BaseDBAsyncClient,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        """Execute SQL to rename an index."""
+        sql = self.sql_rename_index(old_name=old_name, new_name=new_name)
         await self._execute(conn, sql)
 
     async def add_constraint(

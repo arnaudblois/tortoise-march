@@ -295,6 +295,23 @@ def test_alter_field_to_code_serializes_enum_default():
     assert "'draft'" in code  # value rendered as literal
 
 
+def test_alter_field_to_code_accepts_field_type_alias():
+    """Code rendering should accept the same type alias the runtime accepts."""
+    op = AlterField(
+        model_name="Message",
+        db_table="message",
+        field_name="status",
+        old_options={"field_type": "CharField", "default": None},
+        new_options={"field_type": "CharField", "default": "draft"},
+    )
+
+    code = op.to_code()
+
+    assert "field_type" not in code
+    assert "type" in code
+    assert "'draft'" in code
+
+
 def test_alter_field_mutate_state_preserves_existing_options():
     """AlterField should not drop unchanged options in mutate_state."""
     max_length = 12
@@ -755,6 +772,31 @@ async def test_renamemodel_to_sql_emits_table_rename():
     assert sql == ['ALTER TABLE "author" RENAME TO "writer"']
 
 
+async def test_renamemodel_to_sql_emits_artifact_renames():
+    """RenameModel should also rename default-derived indexes and constraints."""
+    editor = PostgresSchemaEditor()
+
+    op = RenameModel(
+        old_name="Author",
+        new_name="Writer",
+        old_db_table="author",
+        new_db_table="writer",
+        index_renames=[("author_slug_idx", "writer_slug_idx")],
+        constraint_renames=[("author_email_uniq", "writer_email_uniq")],
+    )
+
+    sql = await op.to_sql(conn=None, schema_editor=editor)
+
+    assert sql == [
+        'ALTER TABLE "author" RENAME TO "writer"',
+        'ALTER INDEX "author_slug_idx" RENAME TO "writer_slug_idx";',
+        (
+            'ALTER TABLE "writer" RENAME CONSTRAINT "author_email_uniq" '
+            'TO "writer_email_uniq";'
+        ),
+    ]
+
+
 async def test_renamemodel_to_sql_noop_when_table_unchanged():
     """RenameModel renders no SQL when only the model name changes."""
     editor = PostgresSchemaEditor()
@@ -769,6 +811,31 @@ async def test_renamemodel_to_sql_noop_when_table_unchanged():
     sql = await op.to_sql(conn=None, schema_editor=editor)
 
     assert sql == []
+
+
+async def test_renamemodel_to_sql_unapply_reverses_artifact_renames():
+    """Rollback SQL should rename derived artifacts back before the table."""
+    editor = PostgresSchemaEditor()
+
+    op = RenameModel(
+        old_name="Author",
+        new_name="Writer",
+        old_db_table="author",
+        new_db_table="writer",
+        index_renames=[("author_slug_idx", "writer_slug_idx")],
+        constraint_renames=[("author_email_uniq", "writer_email_uniq")],
+    )
+
+    sql = await op.to_sql_unapply(conn=None, schema_editor=editor)
+
+    assert sql == [
+        (
+            'ALTER TABLE "writer" RENAME CONSTRAINT "writer_email_uniq" '
+            'TO "author_email_uniq";'
+        ),
+        'ALTER INDEX "writer_slug_idx" RENAME TO "author_slug_idx";',
+        'ALTER TABLE "writer" RENAME TO "author"',
+    ]
 
 
 def test_renamemodel_mutate_state_renames_model_and_updates_fk_metadata():

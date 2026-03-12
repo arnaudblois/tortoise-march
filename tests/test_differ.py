@@ -709,3 +709,48 @@ def test_detects_model_rename_with_custom_table_name():
     assert not any(
         isinstance(op, CreateModel) and op.name == "CompanyMember" for op in ops
     )
+
+
+def test_model_rename_tracks_default_named_indexes_and_field_unique_constraints():
+    """RenameModel should carry the physical renames Postgres will not do for us."""
+    old = project(
+        {
+            "Author": model(
+                "Author",
+                [
+                    ("id", "IntField", {"primary_key": True}),
+                    ("email", "CharField", {"max_length": 255, "unique": True}),
+                    ("slug", "CharField", {"max_length": 64, "index": True}),
+                ],
+                db_table="author",
+                indexes=[IndexState(columns=("slug", "id"))],
+            ),
+        },
+    )
+    new = project(
+        {
+            "Writer": model(
+                "Writer",
+                [
+                    ("id", "IntField", {"primary_key": True}),
+                    ("email", "CharField", {"max_length": 255, "unique": True}),
+                    ("slug", "CharField", {"max_length": 64, "index": True}),
+                ],
+                db_table="writer",
+                indexes=[IndexState(columns=("slug", "id"))],
+            ),
+        },
+    )
+
+    ops = diff_states(old, new)
+
+    renames = [op for op in ops if isinstance(op, RenameModel)]
+    assert renames
+    rename = renames[0]
+    assert rename.index_renames == [
+        ("author_slug_id_idx", "writer_slug_id_idx"),
+        ("author_slug_idx", "writer_slug_idx"),
+    ]
+    assert rename.constraint_renames == [
+        ("author_email_uniq", "writer_email_uniq"),
+    ]

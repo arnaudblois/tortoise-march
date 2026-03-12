@@ -16,6 +16,7 @@ from tortoisemarch.operations import (
     RemoveField,
     RemoveModel,
     RenameConstraint,
+    RenameModel,
 )
 from tortoisemarch.schema_editor import PostgresSchemaEditor
 
@@ -343,6 +344,53 @@ async def test_alter_field_unique_toggle_applies_constraints(schema_editor):
         await conn.close()
 
 
+async def test_rename_model_renames_derived_index_and_unique_constraint(schema_editor):
+    """RenameModel should normalize derived artifact names after table rename."""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute('DROP TABLE IF EXISTS "writer" CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS "author" CASCADE')
+        create = CreateModel(
+            name="Author",
+            db_table="author",
+            fields=[
+                ("id", "IntField", {"primary_key": True}),
+                ("email", "CharField", {"max_length": 255, "unique": True}),
+                ("slug", "CharField", {"max_length": 255, "index": True}),
+            ],
+        )
+        await create.apply(conn, schema_editor)
+
+        op = RenameModel(
+            old_name="Author",
+            new_name="Writer",
+            old_db_table="author",
+            new_db_table="writer",
+            index_renames=[("author_slug_idx", "writer_slug_idx")],
+            constraint_renames=[("author_email_uniq", "writer_email_uniq")],
+        )
+        await op.apply(conn, schema_editor)
+
+        table_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_name='writer')",
+        )
+        index_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_indexes "
+            "WHERE tablename='writer' AND indexname='writer_slug_idx')",
+        )
+        constraint_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint "
+            "WHERE conname='writer_email_uniq')",
+        )
+
+        assert table_exists is True
+        assert index_exists is True
+        assert constraint_exists is True
+    finally:
+        await conn.close()
+
+
 def test_alter_field_fk_respects_db_column_override():
     """db_column should win over FK default <name>_id resolution."""
     ed = PostgresSchemaEditor()
@@ -482,6 +530,13 @@ def test_sql_create_index_and_unique_index():
     assert uniq == 'CREATE UNIQUE INDEX "foo_a_b_uniq" ON "foo" ("a", "b");'
 
 
+def test_sql_rename_index():
+    """Index rename SQL should target the physical index name directly."""
+    ed = PostgresSchemaEditor()
+    sql = ed.sql_rename_index("author_slug_idx", "writer_slug_idx")
+    assert sql == 'ALTER INDEX "author_slug_idx" RENAME TO "writer_slug_idx";'
+
+
 def test_schema_editor_refuses_non_schema_field_types():
     """Test that non-schema field types are rejected by the schema editor."""
     ed = PostgresSchemaEditor()
@@ -518,7 +573,7 @@ def test_unique_non_pk_still_emits_unique():
             ("slug", "CharField", {"max_length": 20, "unique": True}),
         ],
     )
-    assert '"slug" VARCHAR(20) NOT NULL UNIQUE);' in sql
+    assert '"slug" VARCHAR(20) NOT NULL CONSTRAINT "thing_slug_uniq" UNIQUE);' in sql
 
 
 def test_one_to_one_create_model_implies_unique_without_option():
@@ -539,7 +594,10 @@ def test_one_to_one_create_model_implies_unique_without_option():
             ),
         ],
     )
-    assert '"member_id" INTEGER NOT NULL UNIQUE REFERENCES "member" ("id")' in sql
+    assert (
+        '"member_id" INTEGER NOT NULL CONSTRAINT "member_profile_member_id_uniq" '
+        'UNIQUE REFERENCES "member" ("id")' in sql
+    )
 
 
 def test_one_to_one_add_field_implies_unique_without_option():
@@ -555,7 +613,10 @@ def test_one_to_one_add_field_implies_unique_without_option():
             "referenced_type": "IntField",
         },
     )
-    assert '"member_id" INTEGER NOT NULL UNIQUE REFERENCES "member" ("id")' in sql
+    assert (
+        '"member_id" INTEGER NOT NULL CONSTRAINT "member_profile_member_id_uniq" '
+        'UNIQUE REFERENCES "member" ("id")' in sql
+    )
 
 
 def test_sql_create_index_multi_column_and_unique():

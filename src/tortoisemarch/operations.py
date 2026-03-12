@@ -9,7 +9,7 @@ import hashlib
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from tortoisemarch.exceptions import NotReversibleMigrationError
@@ -52,6 +52,18 @@ def _sanitize_options_for_code(opts: dict[str, Any]) -> dict[str, Any]:
     for k, v in opts.items():
         clean[k] = _value_for_migration_code(v)
     return clean
+
+
+def _normalize_type_key_for_code(opts: dict[str, Any]) -> dict[str, Any]:
+    """Return options with `field_type` normalized to `type` for codegen.
+
+    Runtime paths accept both keys, but generated migrations should keep using
+    the canonical `type` spelling so code rendering and reloading stay aligned.
+    """
+    normalized = dict(opts)
+    if "type" not in normalized and "field_type" in normalized:
+        normalized["type"] = normalized.pop("field_type")
+    return normalized
 
 
 def _field_type_from_options(options: dict[str, Any]) -> str | None:
@@ -283,6 +295,8 @@ class RenameModel(Operation):
     new_name: str
     old_db_table: str
     new_db_table: str
+    index_renames: list[tuple[str, str]] = field(default_factory=list)
+    constraint_renames: list[tuple[str, str]] = field(default_factory=list)
 
     async def apply(self, conn, schema_editor) -> None:
         """Rename the table (and logically the model)."""
@@ -290,10 +304,28 @@ class RenameModel(Operation):
         # this is a no-op in SQL.
         if self.old_db_table != self.new_db_table:
             await schema_editor.rename_model(conn, self.old_db_table, self.new_db_table)
+            for old_name, new_name in self.index_renames:
+                await schema_editor.rename_index(conn, old_name, new_name)
+            for old_name, new_name in self.constraint_renames:
+                await schema_editor.rename_constraint(
+                    conn,
+                    self.new_db_table,
+                    old_name,
+                    new_name,
+                )
 
     async def unapply(self, conn, schema_editor) -> None:
         """Revert the rename."""
         if self.old_db_table != self.new_db_table:
+            for old_name, new_name in reversed(self.constraint_renames):
+                await schema_editor.rename_constraint(
+                    conn,
+                    self.new_db_table,
+                    new_name,
+                    old_name,
+                )
+            for old_name, new_name in reversed(self.index_renames):
+                await schema_editor.rename_index(conn, new_name, old_name)
             await schema_editor.rename_model(conn, self.new_db_table, self.old_db_table)
 
     async def to_sql(self, conn, schema_editor) -> list[str]:
@@ -301,14 +333,44 @@ class RenameModel(Operation):
         _ = conn
         if self.old_db_table == self.new_db_table:
             return []
-        return [schema_editor.sql_rename_model(self.old_db_table, self.new_db_table)]
+        statements = [
+            schema_editor.sql_rename_model(self.old_db_table, self.new_db_table),
+        ]
+        statements.extend(
+            schema_editor.sql_rename_index(old_name, new_name)
+            for old_name, new_name in self.index_renames
+        )
+        statements.extend(
+            schema_editor.sql_rename_constraint(
+                self.new_db_table,
+                old_name,
+                new_name,
+            )
+            for old_name, new_name in self.constraint_renames
+        )
+        return statements
 
     async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
         """Return SQL to rename the table back, if required."""
         _ = conn
         if self.old_db_table == self.new_db_table:
             return []
-        return [schema_editor.sql_rename_model(self.new_db_table, self.old_db_table)]
+        statements = [
+            schema_editor.sql_rename_constraint(
+                self.new_db_table,
+                new_name,
+                old_name,
+            )
+            for old_name, new_name in reversed(self.constraint_renames)
+        ]
+        statements.extend(
+            schema_editor.sql_rename_index(new_name, old_name)
+            for old_name, new_name in reversed(self.index_renames)
+        )
+        statements.append(
+            schema_editor.sql_rename_model(self.new_db_table, self.old_db_table),
+        )
+        return statements
 
     def mutate_state(self, state: ProjectState) -> None:
         """Update ProjectState to reflect this model + table rename."""
@@ -334,10 +396,16 @@ class RenameModel(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
-        return (
+        base = (
             f"RenameModel(old_name={self.old_name!r}, new_name={self.new_name!r}, "
-            f"old_db_table={self.old_db_table!r}, new_db_table={self.new_db_table!r})"
+            f"old_db_table={self.old_db_table!r}, new_db_table={self.new_db_table!r}"
         )
+        if self.index_renames:
+            base += f", index_renames={self.index_renames!r}"
+        if self.constraint_renames:
+            base += f", constraint_renames={self.constraint_renames!r}"
+        base += ")"
+        return base
 
 
 # ---------------------------------------------------------------------------
@@ -626,8 +694,12 @@ class AlterField(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
-        old_opts = _sanitize_options_for_code(dict(self.old_options))
-        new_opts = _sanitize_options_for_code(dict(self.new_options))
+        old_opts = _normalize_type_key_for_code(
+            _sanitize_options_for_code(dict(self.old_options)),
+        )
+        new_opts = _normalize_type_key_for_code(
+            _sanitize_options_for_code(dict(self.new_options)),
+        )
 
         old_changed, new_changed = _changed_only(old_opts, new_opts)
         old_changed["type"] = old_opts["type"]

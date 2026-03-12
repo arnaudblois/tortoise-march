@@ -297,6 +297,81 @@ def _physical_index_columns(ms: ModelState, cols: tuple[str, ...]) -> tuple[str,
     return tuple(physical)
 
 
+def _rename_pairs_for_model_indexes(
+    old_model: ModelState,
+    *,
+    new_db_table: str,
+) -> list[tuple[str, str]]:
+    """Return default-name index renames needed after a table rename.
+
+    Postgres keeps existing index names when a table is renamed. We rename only
+    default-derived names here so later operations can keep deriving the same
+    physical names from the new table name without drifting.
+    """
+    renames: set[tuple[str, str]] = set()
+
+    for index in _model_indexes(old_model):
+        if index.name is not None:
+            continue
+        old_name = default_index_name(
+            old_model.db_table,
+            index.columns,
+            unique=index.unique,
+        )
+        new_name = default_index_name(
+            new_db_table,
+            index.columns,
+            unique=index.unique,
+        )
+        if old_name != new_name:
+            renames.add((old_name, new_name))
+
+    for field_state in _schema_fields(old_model).values():
+        if (
+            not field_state.options.get("index")
+            or field_state.options.get("unique")
+            or field_state.options.get("primary_key")
+        ):
+            continue
+        columns = _physical_index_columns(old_model, (field_state.name,))
+        old_name = default_index_name(old_model.db_table, columns, unique=False)
+        new_name = default_index_name(new_db_table, columns, unique=False)
+        if old_name != new_name:
+            renames.add((old_name, new_name))
+
+    return sorted(renames)
+
+
+def _rename_pairs_for_field_unique_constraints(
+    old_model: ModelState,
+    *,
+    new_db_table: str,
+) -> list[tuple[str, str]]:
+    """Return derived field-unique constraint renames needed after a table rename.
+
+    Field-level unique flags are not tracked in `ModelState.constraints`, so we
+    handle them alongside the model rename itself.
+    """
+    renames: set[tuple[str, str]] = set()
+
+    for field_state in _schema_fields(old_model).values():
+        is_unique = (
+            bool(field_state.options.get("unique"))
+            or field_state.field_type == "OneToOneFieldInstance"
+        )
+        if not is_unique or field_state.options.get("primary_key"):
+            continue
+
+        columns = _physical_index_columns(old_model, (field_state.name,))
+        constraint = ConstraintState(kind=ConstraintKind.UNIQUE, columns=columns)
+        old_name = constraint_db_name(old_model.db_table, constraint)
+        new_name = constraint_db_name(new_db_table, constraint)
+        if old_name != new_name:
+            renames.add((old_name, new_name))
+
+    return sorted(renames)
+
+
 def _detect_model_renames(  # noqa: C901
     removed: dict[str, ModelState],
     added: dict[str, ModelState],
@@ -881,6 +956,14 @@ def diff_states(
                 new_name=new_name,
                 old_db_table=old_ms.db_table,
                 new_db_table=new_ms.db_table,
+                index_renames=_rename_pairs_for_model_indexes(
+                    old_ms,
+                    new_db_table=new_ms.db_table,
+                ),
+                constraint_renames=_rename_pairs_for_field_unique_constraints(
+                    old_ms,
+                    new_db_table=new_ms.db_table,
+                ),
             ),
         )
 
