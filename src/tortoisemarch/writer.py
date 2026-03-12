@@ -240,9 +240,9 @@ def write_migration(
         )
 
     header_doc = (
-        f'"""Migration {filename}.'
+        f'"""Migration {filename}.\n\n'
         f'Generated {datetime.now(UTC).isoformat(timespec="seconds")}Z '
-        "by TortoiseMarch."
+        "by TortoiseMarch.\n"
         '"""'
     )
 

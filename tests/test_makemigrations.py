@@ -140,7 +140,7 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
     mig_text = newest_migration_text(migrations_dir)
     # We remove the first line to avoid having to deal with the creation
     # datetime in the initial docstring.
-    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert "\n".join(mig_text.split("\n")[4:]) == snapshot
     assert 'CreateModel(name="Book"' in mig_text.replace("\n", "").replace(" ", "")
     assert "PrinaryKeyField" not in mig_text
     assert "fields=" in mig_text
@@ -175,7 +175,7 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
     }
 
     mig_text = newest_migration_text(migrations_dir)
-    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert "\n".join(mig_text.split("\n")[4:]) == snapshot
     assert 'CreateModel(name="Author"' in mig_text.replace("\n", "").replace(" ", "")
 
     # --- Step 3: Add 'active' to Author --------------------------------------
@@ -211,7 +211,7 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
 
     mig_text = newest_migration_text(migrations_dir)
 
-    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert "\n".join(mig_text.split("\n")[4:]) == snapshot
     # We expect an AddField op targeting Author.active
     assert "AddField(" in mig_text.replace("\n", "").replace(" ", "")
     assert 'model_name="Author"' in mig_text
@@ -252,7 +252,7 @@ async def test_makemigrations_integration(tmp_path: Path, snapshot):
     assert "RenameModel(" in mig_text
     assert "CreateIndex" in mig_text
     assert 'columns=("name",)' in flat
-    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert "\n".join(mig_text.split("\n")[4:]) == snapshot
 
 
 async def test_makemigrations_multi_app_with_cross_fk(tmp_path: Path, snapshot):
@@ -311,7 +311,7 @@ async def test_makemigrations_multi_app_with_cross_fk(tmp_path: Path, snapshot):
     assert 'CreateModel(name="Member"' in flat
     # Cross-app FK should target team table
     assert '"related_table": "team"' in mig_text
-    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert "\n".join(mig_text.split("\n")[4:]) == snapshot
     sys.path.remove(str(apps_dir))
 
 
@@ -538,7 +538,7 @@ async def test_makemigrations_allows_self_referential_fk(tmp_path: Path, snapsho
             "'related_table': 'node'" in mig_text
             or '"related_table": "node"' in mig_text
         )
-        assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+        assert "\n".join(mig_text.split("\n")[4:]) == snapshot
     finally:
         if str(tmp_path) in sys.path:
             sys.path.remove(str(tmp_path))
@@ -603,7 +603,7 @@ async def test_makemigrations_emits_renamefield_for_manual_rename(
     await run_makemigrations(migrations_dir)
     mig_text = newest_migration_text(migrations_dir)
     assert "RenameField" in mig_text
-    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert "\n".join(mig_text.split("\n")[4:]) == snapshot
 
     # Step 3: add another unrelated field
     write_models(
@@ -625,7 +625,7 @@ async def test_makemigrations_emits_renamefield_for_manual_rename(
     mig_text = newest_migration_text(migrations_dir)
     assert "AddField" in mig_text
     assert "RemoveField" in mig_text
-    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert "\n".join(mig_text.split("\n")[4:]) == snapshot
 
 
 async def test_makemigrations_emits_renamemodel_for_model_rename(
@@ -700,7 +700,7 @@ async def test_makemigrations_emits_renamemodel_for_model_rename(
     assert "RenameModel(" in flat
     assert "old_name='Author'" in flat or 'old_name="Author"' in flat
     assert "new_name='Writer'" in flat or 'new_name="Writer"' in flat
-    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert "\n".join(mig_text.split("\n")[4:]) == snapshot
 
 
 async def test_makemigrations_emits_createindex_for_meta_indexes(
@@ -745,7 +745,7 @@ async def test_makemigrations_emits_createindex_for_meta_indexes(
     assert 'columns=("slug","id")' in mig_text.replace(" ", "")
 
     # Ignore timestamp line for snapshot stability
-    assert "\n".join(mig_text.split("\n")[1:]) == snapshot
+    assert "\n".join(mig_text.split("\n")[4:]) == snapshot
 
 
 async def test_makemigrations_renders_expression_exclusion_constraints_without_churn(
