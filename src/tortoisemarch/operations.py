@@ -1069,6 +1069,7 @@ class RemoveConstraint(Operation):
     db_table: str
     constraint: ConstraintState | dict[str, Any]
     name: str | None = None
+    field_column_map: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.constraint = _constraint_from_payload(self.constraint)
@@ -1089,6 +1090,7 @@ class RemoveConstraint(Operation):
             conn,
             db_table=self.db_table,
             constraint=self.constraint,
+            field_column_map=self.field_column_map or None,
         )
 
     async def to_sql(self, conn, schema_editor) -> list[str]:
@@ -1108,6 +1110,7 @@ class RemoveConstraint(Operation):
             schema_editor.sql_add_constraint(
                 db_table=self.db_table,
                 constraint=self.constraint,
+                field_column_map=self.field_column_map or None,
             ),
         ]
 
@@ -1122,12 +1125,16 @@ class RemoveConstraint(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
-        return (
+        base = (
             f"RemoveConstraint(model_name={self.model_name!r}, "
             f"db_table={self.db_table!r}, "
             f"constraint={self.constraint.to_code()}, "
-            f"name={self.name!r})"
+            f"name={self.name!r}"
         )
+        if self.field_column_map:
+            base += f", field_column_map={self.field_column_map!r}"
+        base += ")"
+        return base
 
 
 @dataclass

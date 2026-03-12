@@ -756,6 +756,26 @@ def test_sql_constraint_helpers_render_postgres_constraints():
     )
 
 
+def test_sql_add_constraint_maps_unique_columns_to_physical_names():
+    """Unique constraint SQL should use physical DB column names when provided."""
+    ed = PostgresSchemaEditor()
+
+    sql = ed.sql_add_constraint(
+        db_table="booking",
+        constraint=ConstraintState(
+            kind="unique",
+            name="booking_practitioner_slot_uniq",
+            columns=("practitioner", "slot"),
+        ),
+        field_column_map={"practitioner": "practitioner_id", "slot": "slot_key"},
+    )
+
+    assert (
+        sql == 'ALTER TABLE "booking" ADD CONSTRAINT '
+        '"booking_practitioner_slot_uniq" UNIQUE ("practitioner_id", "slot_key");'
+    )
+
+
 def test_sql_add_constraint_renders_exclusion_fieldrefs_and_raw_sql():
     """Exclusion SQL should quote field refs and emit RawSQL verbatim."""
     ed = PostgresSchemaEditor()

@@ -381,7 +381,10 @@ class PostgresSchemaEditor(SchemaEditor):
     ) -> str:
         """Render the body of a Postgres model-level constraint definition."""
         if constraint.kind == ConstraintKind.UNIQUE:
-            columns = ", ".join(self._q_ident(column) for column in constraint.columns)
+            columns = ", ".join(
+                self._q_ident((field_column_map or {}).get(column.lower(), column))
+                for column in constraint.columns
+            )
             return (
                 f"CONSTRAINT {self._q_ident(constraint_db_name(db_table, constraint))} "
                 f"UNIQUE ({columns})"

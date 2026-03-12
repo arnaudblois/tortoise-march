@@ -918,6 +918,7 @@ def _diff_model_constraints(
                 db_table=new_model.db_table,
                 constraint=constraint,
                 name=constraint_db_name(old_model.db_table, normalized_constraint),
+                field_column_map=_field_column_map(old_model),
             )
             for normalized_constraint, constraint in old_group[shared:]
         )

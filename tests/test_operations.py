@@ -710,6 +710,33 @@ async def test_exclusion_constraint_operations_render_and_mutate_state():
     assert state.model_states["Booking"].constraints == [constraint]
 
 
+async def test_remove_constraint_rollback_uses_field_column_map():
+    """Rollback SQL should keep logical constraint columns aligned to DB columns."""
+    remove = RemoveConstraint(
+        model_name="Booking",
+        db_table="booking",
+        constraint=ConstraintState(
+            kind="unique",
+            name="booking_practitioner_slot_uniq",
+            columns=("practitioner", "slot"),
+        ),
+        field_column_map={
+            "practitioner": "practitioner_id",
+            "slot": "slot_key",
+        },
+    )
+
+    rollback_sql = await remove.to_sql_unapply(
+        conn=None,
+        schema_editor=PostgresSchemaEditor(),
+    )
+
+    assert rollback_sql == [
+        'ALTER TABLE "booking" ADD CONSTRAINT "booking_practitioner_slot_uniq" '
+        'UNIQUE ("practitioner_id", "slot_key");',
+    ]
+
+
 def test_add_constraint_to_code_is_deterministic():
     """Constraint operations should render deterministic migration code."""
     op = AddConstraint(
@@ -752,6 +779,28 @@ def test_add_constraint_to_code_renders_expression_nodes_readably():
     assert "FieldRef('practitioner')" in code
     assert "RawSQL(" in code
     assert "'practitioner': 'practitioner_id'" in code
+
+
+def test_remove_constraint_to_code_renders_field_column_map():
+    """Rollback metadata should round-trip through generated migration code."""
+    op = RemoveConstraint(
+        model_name="Booking",
+        db_table="booking",
+        constraint=ConstraintState(
+            kind="unique",
+            name="booking_practitioner_slot_uniq",
+            columns=("practitioner", "slot"),
+        ),
+        field_column_map={"practitioner": "practitioner_id"},
+    )
+
+    assert op.to_code() == (
+        "RemoveConstraint(model_name='Booking', db_table='booking', "
+        "constraint=ConstraintState(kind='unique', "
+        "name='booking_practitioner_slot_uniq', columns=('practitioner', 'slot')), "
+        "name='booking_practitioner_slot_uniq', "
+        "field_column_map={'practitioner': 'practitioner_id'})"
+    )
 
 
 def test_alter_field_to_code_orders_changed_opts():

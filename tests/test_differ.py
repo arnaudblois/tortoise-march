@@ -642,6 +642,53 @@ def test_exclusion_constraints_keep_typed_nodes_and_field_column_map():
     assert adds[0].field_column_map["practitioner"] == "practitioner_id"
 
 
+def test_removed_constraints_keep_field_column_map_for_rollbacks():
+    """RemoveConstraint should preserve DB-column mappings needed for rollback SQL."""
+    fields = {
+        "related_table": "practitioner",
+        "referenced_type": "IntField",
+        "to_field": "id",
+    }
+    old = project(
+        {
+            "Booking": model(
+                "Booking",
+                [
+                    ("practitioner", "ForeignKeyFieldInstance", fields),
+                    ("slot", "CharField", {"max_length": 32, "db_column": "slot_key"}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="unique",
+                        name="booking_practitioner_slot_uniq",
+                        columns=("practitioner", "slot"),
+                    ),
+                ],
+            ),
+        },
+    )
+    new = project(
+        {
+            "Booking": model(
+                "Booking",
+                [
+                    ("practitioner", "ForeignKeyFieldInstance", fields),
+                    ("slot", "CharField", {"max_length": 32, "db_column": "slot_key"}),
+                ],
+            ),
+        },
+    )
+
+    ops = diff_states(old, new)
+
+    removes = [op for op in ops if isinstance(op, RemoveConstraint)]
+    assert len(removes) == 1
+    assert removes[0].field_column_map == {
+        "practitioner": "practitioner_id",
+        "slot": "slot_key",
+    }
+
+
 def test_exclusion_constraints_treat_strings_and_fieldrefs_as_equivalent():
     """Legacy string expressions should compare equal to FieldRef expressions."""
     old = project(
