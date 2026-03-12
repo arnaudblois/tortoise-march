@@ -391,6 +391,47 @@ class PostgresSchemaEditor(SchemaEditor):
         """Return SQL to drop an index by name."""
         return f"DROP INDEX IF EXISTS {self._q_ident(name)};"
 
+    def _fk_constraint_name(self, db_table: str, column_name: str) -> str:
+        """Return the default PostgreSQL FK constraint name for one column."""
+        return f"{db_table.lower()}_{column_name.lower()}_fkey"
+
+    def _render_drop_fk_constraint_sql(self, db_table: str, column_name: str) -> str:
+        """Return SQL to drop the FK constraint backing one column."""
+        return self.sql_drop_constraint(
+            db_table=db_table,
+            name=self._fk_constraint_name(db_table, column_name),
+        )
+
+    def _render_add_fk_constraint_sql(
+        self,
+        db_table: str,
+        column_name: str,
+        *,
+        related_table: str | None,
+        to_field: str | None,
+        on_delete: str | None,
+    ) -> str:
+        """Return SQL to create the FK constraint backing one column."""
+        if not related_table:
+            msg = (
+                "FK AlterField replay requires related_table when re-adding the "
+                f"constraint for {db_table}.{column_name}."
+            )
+            raise InvalidMigrationError(msg)
+
+        normalized_on_delete = self._normalize_on_delete(on_delete)
+        constraint_name = self._fk_constraint_name(db_table, column_name)
+        sql = (
+            f"ALTER TABLE {self._q_ident(db_table.lower())} "
+            f"ADD CONSTRAINT {self._q_ident(constraint_name)} "
+            f"FOREIGN KEY ({self._q_ident(column_name)}) "
+            f"REFERENCES {self._q_ident(related_table)} "
+            f"({self._q_ident(to_field or 'id')})"
+        )
+        if normalized_on_delete:
+            sql += f" ON DELETE {normalized_on_delete}"
+        return sql + ";"
+
     def _resolve_constraint_column(
         self,
         logical_name: str,
@@ -664,7 +705,7 @@ class PostgresSchemaEditor(SchemaEditor):
 
         return stmts
 
-    def sql_alter_field(  # noqa: C901, PLR0912
+    def sql_alter_field(  # noqa: C901, PLR0912, PLR0915
         self,
         db_table: str,
         field_name: str,
@@ -785,10 +826,37 @@ class PostgresSchemaEditor(SchemaEditor):
                 ),
             )
 
+        old_is_fk = old_type in FK_TYPES
+        new_is_fk = new_type in FK_TYPES
+        if old_is_fk and new_is_fk:
+            old_on_delete = self._normalize_on_delete(old_options.get("on_delete"))
+            new_on_delete = self._normalize_on_delete(new_options.get("on_delete"))
+            if old_on_delete != new_on_delete:
+                statements.append(
+                    self._render_drop_fk_constraint_sql(
+                        db_table=db_table,
+                        column_name=old_col,
+                    ),
+                )
+
         if new_index and (not old_index or old_colname != new_colname):
             statements.append(
                 self._render_create_index_sql(db_table, (new_colname,), unique=False),
             )
+
+        if old_is_fk and new_is_fk:
+            old_on_delete = self._normalize_on_delete(old_options.get("on_delete"))
+            new_on_delete = self._normalize_on_delete(new_options.get("on_delete"))
+            if old_on_delete != new_on_delete:
+                statements.append(
+                    self._render_add_fk_constraint_sql(
+                        db_table=db_table,
+                        column_name=new_col,
+                        related_table=new_options.get("related_table"),
+                        to_field=new_options.get("to_field"),
+                        on_delete=new_options.get("on_delete"),
+                    ),
+                )
 
         return statements
 

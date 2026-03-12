@@ -303,6 +303,51 @@ async def test_constraint_operations_apply_against_postgres(schema_editor):
         await conn.close()
 
 
+async def test_alter_field_fk_on_delete_rewrites_constraint_against_postgres(
+    schema_editor,
+):
+    """FK on_delete alters should replay by replacing the backing FK constraint."""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute('DROP TABLE IF EXISTS "book" CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS "author" CASCADE')
+        await conn.execute('CREATE TABLE "author" (id SERIAL PRIMARY KEY)')
+        await conn.execute(
+            'CREATE TABLE "book" ('
+            "id SERIAL PRIMARY KEY, "
+            'author_id INTEGER NOT NULL REFERENCES "author"(id) ON DELETE CASCADE)',
+        )
+
+        op = AlterField(
+            model_name="Book",
+            db_table="book",
+            field_name="author",
+            old_options={
+                "type": "ForeignKeyFieldInstance",
+                "related_table": "author",
+                "to_field": "id",
+                "referenced_type": "IntField",
+                "on_delete": "CASCADE",
+            },
+            new_options={
+                "type": "ForeignKeyFieldInstance",
+                "related_table": "author",
+                "to_field": "id",
+                "referenced_type": "IntField",
+                "on_delete": "RESTRICT",
+            },
+        )
+        await op.apply(conn, schema_editor)
+
+        delete_action = await conn.fetchval(
+            "SELECT confdeltype FROM pg_constraint "
+            "WHERE conname = 'book_author_id_fkey'",
+        )
+        assert delete_action == b"r"
+    finally:
+        await conn.close()
+
+
 async def test_alter_field_unique_toggle_applies_constraints(schema_editor):
     """AlterField unique changes should add and drop named constraints."""
     conn = await asyncpg.connect(DATABASE_URL)
@@ -410,6 +455,38 @@ def test_alter_field_fk_respects_db_column_override():
         },
     )
     assert any('ALTER COLUMN "person_ref"' in stmt for stmt in stmts)
+
+
+def test_sql_alter_field_rewrites_fk_constraint_for_on_delete_change():
+    """FK on_delete alters should drop and recreate the FK constraint."""
+    ed = PostgresSchemaEditor()
+
+    stmts = ed.sql_alter_field(
+        db_table="book",
+        field_name="author",
+        old_options={
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "author",
+            "to_field": "id",
+            "db_column": "author_ref",
+            "referenced_type": "IntField",
+            "on_delete": "CASCADE",
+        },
+        new_options={
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "author",
+            "to_field": "id",
+            "db_column": "author_ref",
+            "referenced_type": "IntField",
+            "on_delete": "RESTRICT",
+        },
+    )
+
+    assert stmts == [
+        'ALTER TABLE "book" DROP CONSTRAINT IF EXISTS "book_author_ref_fkey";',
+        'ALTER TABLE "book" ADD CONSTRAINT "book_author_ref_fkey" '
+        'FOREIGN KEY ("author_ref") REFERENCES "author" ("id") ON DELETE RESTRICT;',
+    ]
 
 
 def test_sql_add_remove_rename_field_use_fk_column_names():

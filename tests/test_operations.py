@@ -846,6 +846,37 @@ def test_alter_field_to_code_orders_changed_opts():
     assert code == expected
 
 
+def test_alter_field_to_code_keeps_fk_metadata_for_on_delete_change():
+    """Compact FK on_delete alters must keep replay metadata in generated code."""
+    op = AlterField(
+        "Book",
+        "book",
+        "author",
+        {
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "author",
+            "to_field": "id",
+            "referenced_type": "UUIDField",
+            "on_delete": "CASCADE",
+        },
+        {
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "author",
+            "to_field": "id",
+            "referenced_type": "UUIDField",
+            "on_delete": "RESTRICT",
+        },
+    )
+
+    code = op.to_code()
+
+    assert "'on_delete': 'CASCADE'" in code
+    assert "'on_delete': 'RESTRICT'" in code
+    assert "'related_table': 'author'" in code
+    assert "'to_field': 'id'" in code
+    assert "'referenced_type': 'UUIDField'" in code
+
+
 # ------- Test RenameModel --------------------------------------------------
 
 

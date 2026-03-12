@@ -156,6 +156,25 @@ def _normalize_field_name_hints(values: tuple[str, ...] | list[str]) -> tuple[st
     return tuple(sorted({str(value).lower() for value in values}))
 
 
+def _preserve_fk_metadata_for_on_delete_change(
+    old_source: dict[str, Any],
+    new_source: dict[str, Any],
+    old_changed: dict[str, Any],
+    new_changed: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep FK metadata needed to replay compact `on_delete` alters safely."""
+    if old_changed.get("on_delete") == new_changed.get("on_delete"):
+        return old_changed, new_changed
+
+    keep_keys = {"related_table", "to_field", "db_column", "referenced_type"}
+    for key in keep_keys:
+        if key in old_source:
+            old_changed[key] = old_source[key]
+        if key in new_source:
+            new_changed[key] = new_source[key]
+    return old_changed, new_changed
+
+
 def default_index_name(db_table: str, columns: tuple[str, ...], *, unique: bool) -> str:
     """Return a stable index name given table/columns/uniqueness."""
     cols = "_".join(c.lower() for c in columns)
@@ -806,6 +825,12 @@ class AlterField(Operation):
         old_changed, new_changed = _changed_only(old_opts, new_opts)
         old_changed["type"] = old_opts["type"]
         new_changed["type"] = new_opts["type"]
+        old_changed, new_changed = _preserve_fk_metadata_for_on_delete_change(
+            old_opts,
+            new_opts,
+            old_changed,
+            new_changed,
+        )
 
         # Never compact away 'type' (and keep max_length if CharField)
         def _compact(d: dict) -> dict:

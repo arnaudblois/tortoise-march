@@ -222,6 +222,30 @@ def test_alter_field_fk_reference_change_allowed_for_model_rename():
     _validate_safe_alters([rename, op])  # should not raise
 
 
+def test_alter_field_allows_fk_on_delete_change():
+    """FK on_delete changes should be treated as supported schema alters."""
+    op = AlterField(
+        model_name="Book",
+        db_table="book",
+        field_name="author",
+        old_options={
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "author",
+            "to_field": "id",
+            "referenced_type": "UUIDField",
+            "on_delete": "CASCADE",
+        },
+        new_options={
+            "type": "ForeignKeyFieldInstance",
+            "related_table": "author",
+            "to_field": "id",
+            "referenced_type": "UUIDField",
+            "on_delete": "RESTRICT",
+        },
+    )
+    _validate_safe_alters([op])  # should not raise
+
+
 def test_alter_field_allows_integer_widening():
     """Safe integer widening should be allowed during makemigrations."""
     op = AlterField(

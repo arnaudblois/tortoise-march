@@ -229,8 +229,9 @@ def _is_supported_type_change(
     return old_type == "CharField" and new_type in {"CharField", "TextField"}
 
 
-def _validate_safe_alters(operations: list[Any]) -> None:  # noqa: C901
+def _validate_safe_alters(operations: list[Any]) -> None:  # noqa: C901, PLR0912
     """Reject AlterField ops that change unsupported schema attributes."""
+    relation_types = {"ForeignKeyFieldInstance", "OneToOneFieldInstance"}
     related_table_renames: set[tuple[str | None, str | None]] = set()
     for op in operations:
         if isinstance(op, RenameModel):
@@ -278,6 +279,13 @@ def _validate_safe_alters(operations: list[Any]) -> None:  # noqa: C901
 
         # Allowed schema changes handled by SchemaEditor.
         diffs -= {"null", "default", "index", "unique"}
+
+        if (
+            diffs == {"on_delete"}
+            and old_type == new_type
+            and old_type in relation_types
+        ):
+            diffs.clear()
 
         if diffs:
             keys = ", ".join(sorted(diffs))

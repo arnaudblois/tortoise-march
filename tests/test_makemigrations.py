@@ -703,6 +703,89 @@ async def test_makemigrations_emits_renamemodel_for_model_rename(
     assert "\n".join(mig_text.split("\n")[4:]) == snapshot
 
 
+async def test_makemigrations_emits_replayable_fk_on_delete_alter(tmp_path: Path):
+    """FK on_delete changes should generate a normal replayable AlterField op."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    def write_models(code: str) -> None:
+        """Write models module and clear import caches."""
+        (models_dir / "__init__.py").write_text(textwrap.dedent(code))
+        pycache = models_dir / "__pycache__"
+        if pycache.exists():
+            for f in pycache.glob("__init__.*.pyc"):
+                f.unlink()
+        if "models" in sys.modules:
+            del sys.modules["models"]
+
+    try:
+        write_models(
+            """
+            from tortoise import fields, models
+
+            class User(models.Model):
+                id = fields.UUIDField(primary_key=True)
+
+            class AuditLog(models.Model):
+                id = fields.UUIDField(primary_key=True)
+                creator = fields.ForeignKeyField(
+                    "models.User",
+                    related_name="created_logs",
+                    on_delete=fields.CASCADE,
+                )
+            """,
+        )
+        await run_makemigrations(migrations_dir)
+
+        write_models(
+            """
+            from tortoise import fields, models
+
+            class User(models.Model):
+                id = fields.UUIDField(primary_key=True)
+
+            class AuditLog(models.Model):
+                id = fields.UUIDField(primary_key=True)
+                creator = fields.ForeignKeyField(
+                    "models.User",
+                    related_name="created_logs",
+                    on_delete=fields.RESTRICT,
+                )
+            """,
+        )
+        await run_makemigrations(migrations_dir)
+        mig_text = newest_migration_text(migrations_dir)
+
+        assert "AlterField(" in mig_text
+        assert (
+            '"on_delete": "CASCADE"' in mig_text or "'on_delete': 'CASCADE'" in mig_text
+        )
+        assert (
+            '"on_delete": "RESTRICT"' in mig_text
+            or "'on_delete': 'RESTRICT'" in mig_text
+        )
+        assert (
+            '"related_table": "user"' in mig_text
+            or "'related_table': 'user'" in mig_text
+        )
+        assert '"to_field": "id"' in mig_text or "'to_field': 'id'" in mig_text
+        assert (
+            '"referenced_type": "UUIDField"' in mig_text
+            or "'referenced_type': 'UUIDField'" in mig_text
+        )
+    finally:
+        if str(tmp_path) in sys.path:
+            sys.path.remove(str(tmp_path))
+        if "models" in sys.modules:
+            del sys.modules["models"]
+
+
 async def test_makemigrations_emits_createindex_for_meta_indexes(
     tmp_path: Path,
     snapshot,
