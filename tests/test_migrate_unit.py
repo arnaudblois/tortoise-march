@@ -18,6 +18,7 @@ from tortoisemarch.migrate import (
     migrate,
     plan_route,
     resolve_target_name,
+    show_migration_sql,
     tortoise_context,
     validate_applied_migration_checksums,
 )
@@ -138,6 +139,51 @@ async def test_migrate_rewrite_history_requires_fake():
             location=Path("migrations"),
             rewrite_history=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_show_migration_sql_renders_one_migration_by_prefix_or_full_name(
+    tmp_path: Path,
+):
+    """show-sql should resolve one migration file by prefix or full stem."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+    migration_file = migrations_dir / "0003_add_bar.py"
+    migration_file.write_text(
+        """
+from typing import ClassVar
+
+from tortoisemarch.base import BaseMigration
+from tortoisemarch.operations import AddField, Operation
+
+
+class Migration(BaseMigration):
+    operations: ClassVar[list[Operation]] = [
+        AddField(
+            model_name="Foo",
+            db_table="foo",
+            field_name="bar",
+            field_type="CharField",
+            options={"max_length": 50, "null": True},
+        ),
+    ]
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+    sql_by_prefix = await show_migration_sql(
+        "0003",
+        location=migrations_dir,
+    )
+    sql_by_name = await show_migration_sql(
+        "0003_add_bar",
+        location=migrations_dir,
+    )
+
+    expected = 'ALTER TABLE "foo" ADD COLUMN "bar" VARCHAR(50);'
+    assert sql_by_prefix == expected
+    assert sql_by_name == expected
 
 
 @pytest.mark.asyncio

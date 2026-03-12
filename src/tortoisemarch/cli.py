@@ -8,6 +8,7 @@ Subcommands
 
 - migrate: Apply unapplied migrations in order, or display SQL without
   executing it (--sql), or mark them as applied (--fake).
+- show-sql: Render the SQL for one migration file without applying it.
 
 Configured as a console script via:
 
@@ -27,7 +28,7 @@ import click
 
 from tortoisemarch.exceptions import TortoiseMarchError
 from tortoisemarch.makemigrations import makemigrations
-from tortoisemarch.migrate import migrate
+from tortoisemarch.migrate import migrate, show_migration_sql
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -46,7 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="command",
         required=False,
-        metavar="{makemigrations,migrate}",
+        metavar="{makemigrations,migrate,show-sql}",
     )
 
     # ---- makemigrations -------------------------------------------------
@@ -125,6 +126,27 @@ def _build_parser() -> argparse.ArgumentParser:
             "current migration files. Requires --fake."
         ),
     )
+
+    # ---- show-sql -------------------------------------------------------
+
+    show_sql = subparsers.add_parser(
+        "show-sql",
+        help="Render SQL for one migration file.",
+        description=(
+            "Render the forward SQL for a single migration file without "
+            "applying it or changing recorder history. Accepts either a full "
+            "migration name or a unique numeric prefix such as 0003."
+        ),
+    )
+    show_sql.add_argument(
+        "migration",
+        help="Migration number prefix or full migration name to inspect.",
+    )
+    show_sql.add_argument(
+        "--location",
+        type=Path,
+        help="Override the migrations directory (otherwise read from pyproject).",
+    )
     return parser
 
 
@@ -152,6 +174,7 @@ def main() -> None:
     Parses arguments and dispatches to the appropriate async workflow:
       - makemigrations(...)
       - migrate(...)
+      - show_migration_sql(...)
 
     Notes:
         `makemigrations`/`migrate` load Tortoise config and the migrations
@@ -179,6 +202,13 @@ def main() -> None:
                     fake=args.fake,
                     target=args.target,
                     rewrite_history=args.rewrite_history,
+                ),
+            )
+        elif args.command == "show-sql":
+            asyncio.run(
+                show_migration_sql(
+                    migration_name=args.migration,
+                    location=args.location,
                 ),
             )
         else:

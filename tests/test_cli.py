@@ -30,6 +30,16 @@ def test_migrate_parser_defaults_rewrite_history_to_false():
     assert args.rewrite_history is False
 
 
+def test_show_sql_parser_accepts_migration_prefix():
+    """show-sql should accept one migration identifier argument."""
+    parser = _build_parser()
+
+    args = parser.parse_args(["show-sql", "0003"])
+
+    assert args.command == "show-sql"
+    assert args.migration == "0003"
+
+
 def test_main_prints_clean_library_errors(monkeypatch, capsys):
     """The CLI should render library errors without a traceback."""
 

@@ -185,6 +185,113 @@ def _load_state_for_names(
     return state
 
 
+def _migration_sources(
+    *,
+    location: Path,
+    include_locations: list[dict[str, Any]],
+) -> list[tuple[str | None, Path]]:
+    """Return the ordered migration sources used for resolution and replay."""
+    sources: list[tuple[str | None, Path]] = [
+        (entry["label"], entry["path"]) for entry in include_locations
+    ]
+    sources.append((None, Path(location)))
+    return sources
+
+
+def _collect_migration_files(
+    *,
+    location: Path,
+    include_locations: list[dict[str, Any]],
+) -> tuple[list[str], dict[str, Path], dict[str, str | None]]:
+    """Collect migration names, files, and include labels across all sources."""
+    all_names: list[str] = []
+    name_to_file: dict[str, Path] = {}
+    name_to_label: dict[str, str | None] = {}
+
+    for label, path in _migration_sources(
+        location=location,
+        include_locations=include_locations,
+    ):
+        for file in iter_migration_files(path):
+            name = _prefixed_name(label, file.stem)
+            if name in name_to_file:
+                msg = f"Duplicate migration name detected: {name}"
+                raise InvalidMigrationError(msg)
+            all_names.append(name)
+            name_to_file[name] = file
+            name_to_label[name] = label
+
+    return all_names, name_to_file, name_to_label
+
+
+async def show_migration_sql(
+    migration_name: str,
+    location: Path | None = None,
+    *,
+    reverse: bool = False,
+) -> str:
+    """Render SQL for one migration file without applying or recording it.
+
+    Args:
+        migration_name: Migration number prefix or full file stem.
+        location: Optional migrations directory override.
+        reverse: If True, render rollback SQL instead of forward SQL.
+
+    Returns:
+        The rendered SQL preview for the requested migration.
+
+    Raises:
+        InvalidMigrationError: If the migration cannot be resolved or loaded.
+
+    """
+    _tortoise_conf, location, include_locations = resolve_runtime_config(
+        tortoise_conf={},
+        location=location,
+    )
+    all_names, name_to_file, name_to_label = _collect_migration_files(
+        location=location,
+        include_locations=include_locations,
+    )
+    resolved_name = resolve_target_name(migration_name, all_names)
+    file = name_to_file[resolved_name]
+    label = name_to_label[resolved_name]
+    prefix = safe_module_fragment(label) if label else "main"
+    module = import_module_from_path(
+        file,
+        f"tm_mig_show_{prefix}_{file.stem}",
+    )
+    Migration = getattr(module, "Migration", None)  # noqa: N806
+    if Migration is None:
+        msg = f"Migration file '{file.name}' has no 'Migration' class."
+        raise InvalidMigrationError(msg)
+
+    schema_editor = PostgresSchemaEditor()
+    if issubclass(Migration, BaseMigration):
+        statements = await (
+            Migration.unapply_to_sql(None, schema_editor)
+            if reverse
+            else Migration.to_sql(None, schema_editor)
+        )
+    else:
+        method_name = "to_sql_unapply" if reverse else "to_sql"
+        render = getattr(Migration, method_name, None)
+        if render is None or not callable(render):
+            statements = [
+                (
+                    "-- No rollback SQL preview for custom migration"
+                    if reverse
+                    else "-- No SQL preview for custom migration"
+                ),
+            ]
+        else:
+            statements = _coerce_sql_statements(await render(None, schema_editor))
+
+    text = "\n".join(statements)
+    if text:
+        click.echo(text)
+    return text
+
+
 async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
     tortoise_conf: dict | None = None,
     location: Path | None = None,
@@ -238,24 +345,10 @@ async def migrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
             applied_checksums = await MigrationRecorder.list_applied_with_checksums()
             applied = set(applied_checksums)
 
-            sources: list[tuple[str | None, Path]] = [
-                (entry["label"], entry["path"]) for entry in include_locations
-            ]
-            sources.append((None, Path(location)))
-
-            all_names: list[str] = []
-            name_to_file: dict[str, Path] = {}
-            name_to_label: dict[str, str | None] = {}
-
-            for label, path in sources:
-                for file in iter_migration_files(path):
-                    name = _prefixed_name(label, file.stem)
-                    if name in name_to_file:
-                        msg = f"Duplicate migration name detected: {name}"
-                        raise InvalidMigrationError(msg)
-                    all_names.append(name)
-                    name_to_file[name] = file
-                    name_to_label[name] = label
+            all_names, name_to_file, name_to_label = _collect_migration_files(
+                location=Path(location),
+                include_locations=include_locations,
+            )
 
             current_checksums = {
                 name: migration_checksum(file) for name, file in name_to_file.items()

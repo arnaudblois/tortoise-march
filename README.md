@@ -145,6 +145,17 @@ This applies any new migration files to your database.
 - `--fake` updates the migration recorder without running SQL (useful if you applied changes manually).
 - `--rewrite-history` resets recorder history and rebuilds it from current migration files (development-only, requires `--fake`).
 
+Inspect the SQL for one migration file without applying it:
+
+```bash
+poetry run tortoisemarch show-sql 0003
+poetry run tortoisemarch show-sql 0003_add_user_indexes
+```
+
+`show-sql` resolves either a unique numeric prefix or the full migration name,
+imports that one migration file, and renders its forward SQL without touching
+the migration recorder.
+
 Migration safety:
 
 - We store a SHA-256 checksum for each applied migration file.
