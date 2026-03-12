@@ -26,6 +26,7 @@ from typing import Any
 
 from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.extensions import PostgresExtension
 from tortoisemarch.model_state import (
     ConstraintKind,
     ConstraintState,
@@ -36,12 +37,14 @@ from tortoisemarch.model_state import (
 )
 from tortoisemarch.operations import (
     AddConstraint,
+    AddExtension,
     AddField,
     AlterField,
     CreateIndex,
     CreateModel,
     Operation,
     RemoveConstraint,
+    RemoveExtension,
     RemoveField,
     RemoveIndex,
     RemoveModel,
@@ -302,6 +305,11 @@ def _field_column_map(ms: ModelState) -> dict[str, str]:
             (field_state.name,),
         )[0]
     return mapping
+
+
+def _project_extensions(state: ProjectState) -> dict[str, PostgresExtension]:
+    """Return project extensions keyed by normalized name."""
+    return {extension.name: extension for extension in state.extensions}
 
 
 def _rename_pairs_for_model_indexes(
@@ -950,6 +958,18 @@ def diff_states(
 
     from_models = from_state.model_states
     to_models = to_state.model_states
+    removed_extensions: list[PostgresExtension] = []
+
+    old_extensions = _project_extensions(from_state)
+    new_extensions = _project_extensions(to_state)
+    ops.extend(
+        AddExtension(extension=new_extensions[extension_name])
+        for extension_name in sorted(new_extensions.keys() - old_extensions.keys())
+    )
+    removed_extensions.extend(
+        old_extensions[extension_name]
+        for extension_name in sorted(old_extensions.keys() - new_extensions.keys())
+    )
 
     # ---- Identify removed/added models first
     removed: dict[str, ModelState] = {
@@ -1069,5 +1089,7 @@ def diff_states(
             new_model=new_model,
             model_name=new_name,
         )
+
+    ops.extend(RemoveExtension(extension=extension) for extension in removed_extensions)
 
     return ops

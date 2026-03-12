@@ -30,6 +30,8 @@ def _auto_name(operations: list, number: int) -> str:  # noqa: C901, PLR0912
         return "0001_initial.py"
 
     priority = {
+        "AddExtension": 0,
+        "RemoveExtension": 0,
         "CreateModel": 0,
         "RemoveModel": 0,
         "RenameModel": 0,
@@ -58,6 +60,10 @@ def _auto_name(operations: list, number: int) -> str:  # noqa: C901, PLR0912
         cname = op.__class__.__name__
         if cname == "CreateModel":
             parts.append(f"create_{_safe_fragment(op.name)}")
+        elif cname == "AddExtension":
+            parts.append(f"addextension_{_safe_fragment(op.extension.name)}")
+        elif cname == "RemoveExtension":
+            parts.append(f"removeextension_{_safe_fragment(op.extension.name)}")
         elif cname == "RemoveModel":
             parts.append(f"remove_{_safe_fragment(op.name)}")
         elif cname == "AddField":
@@ -203,6 +209,8 @@ def write_migration(
         )
     if any("FieldRef(" in code or "RawSQL(" in code for code in op_codes):
         import_lines.append("from tortoisemarch.constraints import FieldRef, RawSQL")
+    if any("PostgresExtension(" in code for code in op_codes):
+        import_lines.append("from tortoisemarch.extensions import PostgresExtension")
     import_block = "\n".join(import_lines)
 
     # Build operations block

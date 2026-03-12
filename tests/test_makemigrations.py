@@ -830,6 +830,87 @@ async def test_makemigrations_renders_expression_exclusion_constraints_without_c
             del sys.modules["models"]
 
 
+async def test_makemigrations_orders_extensions_before_constraints(tmp_path: Path):
+    """Extension requirements should be emitted before dependent constraints."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").touch()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    def write_models(code: str) -> None:
+        (models_dir / "__init__.py").write_text(textwrap.dedent(code))
+        pycache = models_dir / "__pycache__"
+        if pycache.exists():
+            for f in pycache.glob("__init__.*.pyc"):
+                f.unlink()
+        if "models" in sys.modules:
+            del sys.modules["models"]
+
+    try:
+        write_models(
+            """
+            from tortoise import fields, models
+
+            from tortoisemarch.constraints import (
+                ExclusionConstraint,
+                FieldRef,
+                RawSQL,
+            )
+            from tortoisemarch.extensions import PostgresExtension
+
+            class Practitioner(models.Model):
+                id = fields.UUIDField(primary_key=True)
+
+            class Booking(models.Model):
+                id = fields.UUIDField(primary_key=True)
+                practitioner = fields.ForeignKeyField(
+                    "models.Practitioner",
+                    related_name="bookings",
+                )
+                start_at = fields.DatetimeField()
+                end_at = fields.DatetimeField()
+
+                class Meta:
+                    tortoisemarch_extensions = (
+                        PostgresExtension("btree_gist"),
+                    )
+                    tortoisemarch_constraints = (
+                        ExclusionConstraint(
+                            expressions=(
+                                (FieldRef("practitioner"), "="),
+                                (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                            ),
+                            name="bookings_no_overlap_per_practitioner",
+                            index_type="gist",
+                        ),
+                    )
+            """,
+        )
+
+        await run_makemigrations(migrations_dir)
+        mig_text = newest_migration_text(migrations_dir)
+
+        assert "from tortoisemarch.extensions import PostgresExtension" in mig_text
+        assert "AddExtension(" in mig_text
+        assert "AddConstraint(" in mig_text
+        assert mig_text.index("AddExtension(") < mig_text.index("AddConstraint(")
+
+        before = sorted(f.name for f in migrations_dir.glob("*.py"))
+        await run_makemigrations(migrations_dir)
+        after = sorted(f.name for f in migrations_dir.glob("*.py"))
+
+        assert before == after
+    finally:
+        if str(tmp_path) in sys.path:
+            sys.path.remove(str(tmp_path))
+        if "models" in sys.modules:
+            del sys.modules["models"]
+
+
 @pytest.mark.asyncio
 async def test_makemigrations_check_only_errors(tmp_path: Path):
     """Check-only should fail when changes would create a migration file."""

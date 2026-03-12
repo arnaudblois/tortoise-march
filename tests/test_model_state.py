@@ -1,6 +1,7 @@
 """Tests for ProjectState / ModelState serialization."""
 
 from tortoisemarch.constraints import FieldRef, RawSQL
+from tortoisemarch.extensions import PostgresExtension
 from tortoisemarch.model_state import (
     ConstraintKind,
     ConstraintState,
@@ -14,6 +15,7 @@ from tortoisemarch.model_state import (
 def test_model_state_round_trips_indexes_and_constraints():
     """ModelState serialization should preserve explicit schema objects."""
     state = ProjectState(
+        extensions=[PostgresExtension("btree_gist")],
         model_states={
             "Book": ModelState(
                 name="Book",
@@ -62,6 +64,7 @@ def test_model_state_round_trips_indexes_and_constraints():
     restored = ProjectState.from_dict(state.to_dict())
 
     assert restored == state
+    assert restored.extensions == [PostgresExtension("btree_gist")]
 
 
 def test_constraint_state_coerces_strings_to_enum_and_serializes_as_strings():

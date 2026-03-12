@@ -15,6 +15,10 @@ from tortoisemarch.constraints import (
     exclusion_expressions_to_dict,
     normalize_exclusion_expressions,
 )
+from tortoisemarch.extensions import (
+    PostgresExtension,
+    normalize_postgres_extensions,
+)
 
 
 class ConstraintKind(StrEnum):
@@ -320,18 +324,33 @@ class ProjectState:
     """Represents the complete set of models in the project for diffing."""
 
     model_states: dict[str, ModelState] = field(default_factory=dict)
+    extensions: list[PostgresExtension] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Normalize project-level requirements into a deterministic ordering."""
+        self.extensions = normalize_postgres_extensions(
+            self.extensions,
+            error_context="ProjectState extensions",
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the whole project state to a dict."""
         return {
             "model_states": {k: v.to_dict() for k, v in self.model_states.items()},
+            "extensions": [extension.to_dict() for extension in self.extensions],
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProjectState":
         """Rehydrate a ProjectState from a dict."""
         ms = {k: ModelState.from_dict(v) for k, v in data["model_states"].items()}
-        return cls(model_states=ms)
+        return cls(
+            model_states=ms,
+            extensions=[
+                PostgresExtension.from_dict(value)
+                for value in data.get("extensions", ()) or ()
+            ],
+        )
 
     def get_model(self, name: str) -> ModelState:
         """Return the ModelState by name or raise a helpful error."""

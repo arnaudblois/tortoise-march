@@ -9,11 +9,20 @@ Documentation: https://arnaudblois.github.io/tortoise-march/
 
 ## Why Tortoise March?
 
-Tortoise March was developed to address the need of Django-style migrations at the time Tortoise was relying on Aerich for migrations. Since Tortoise ORM `1.1.5`, Tortoise ships its own migration system. You may still prefer Tortoise March if you want:
+Tortoise March was originally developed when Tortoise ORM relied on Aerich for
+migrations and there was a need for a more Django-style workflow. Since
+Tortoise ORM `1.1.5`, Tortoise ships its own migration system. Tortoise March
+is still relevant if you want a migration tool that goes beyond the ORM's
+built-in schema surface and models PostgreSQL-specific requirements such as
+named constraints, expression-based exclusion constraints, and required
+extensions like `btree_gist`.
+
+You may still prefer Tortoise March if you want:
 
 - a single, central migrations folder instead of more brittle per-app migration package
 - small, readable, fully linted Python migration files with predictable generated operations
-- first-class handling of model-level indexes and constraints in migration state
+- first-class migration-state tracking for model-level indexes, constraints, and PostgreSQL extensions
+- explicit dependency ordering for prerequisite schema requirements such as extensions before dependent constraints
 
 Tortoise March is used in real production systems and has been battle-tested there.
 
@@ -280,6 +289,58 @@ state, resolves logical names to physical database column names, and renders
 PostgreSQL `EXCLUDE USING ...` DDL in migrations. `RawSQL(...)` is emitted
 verbatim and is not introspected further.
 
+### PostgreSQL Extensions
+
+Some PostgreSQL schema features depend on extensions being installed before the
+constraint or index can be created. A common example is `btree_gist`, which is
+required for GiST exclusion constraints that compare UUID values with `=`.
+
+Declare those requirements in the same model `Meta` class with
+`Meta.tortoisemarch_extensions`:
+
+```python
+from tortoise import fields, models
+from tortoisemarch.constraints import ExclusionConstraint, FieldRef, RawSQL
+from tortoisemarch.extensions import PostgresExtension
+
+
+class Practitioner(models.Model):
+    id = fields.UUIDField(primary_key=True)
+
+
+class Booking(models.Model):
+    id = fields.UUIDField(primary_key=True)
+    practitioner = fields.ForeignKeyField(
+        "models.Practitioner",
+        related_name="bookings",
+    )
+    start_at = fields.DatetimeField()
+    end_at = fields.DatetimeField()
+
+    class Meta:
+        tortoisemarch_extensions = (
+            PostgresExtension("btree_gist"),
+        )
+        tortoisemarch_constraints = (
+            ExclusionConstraint(
+                expressions=(
+                    (FieldRef("practitioner"), "="),
+                    (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                ),
+                name="bookings_no_overlap_per_practitioner",
+                index_type="gist",
+            ),
+        )
+```
+
+Tortoise March deduplicates identical extension declarations across models,
+tracks them at project state level, and emits explicit `AddExtension` /
+`RemoveExtension` operations in generated migrations.
+
+When a migration adds both an extension and a dependent constraint, Tortoise
+March orders the extension first so a fresh PostgreSQL database can replay the
+migration without manual edits.
+
 ### What Tortoise March Does
 
 After extraction, Tortoise March keeps constraints explicit in migration state.
@@ -304,6 +365,7 @@ Supported today on Postgres:
 
 - model-level `UniqueConstraint`
 - model-level `CheckConstraint`
+- `Meta.tortoisemarch_extensions` with `PostgresExtension`
 - `Meta.unique_together`
 - `Meta.tortoisemarch_constraints` with `ExclusionConstraint`
 - single-column `unique=True` changes through `AlterField`

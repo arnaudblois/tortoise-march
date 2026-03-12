@@ -13,6 +13,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tortoisemarch.exceptions import NotReversibleMigrationError
+from tortoisemarch.extensions import (
+    PostgresExtension,
+    normalize_postgres_extension,
+    normalize_postgres_extensions,
+)
 from tortoisemarch.model_state import (
     ConstraintKind,
     ConstraintState,
@@ -136,6 +141,16 @@ def _constraint_from_payload(
     return ConstraintState.from_dict(payload)
 
 
+def _extension_from_payload(
+    payload: PostgresExtension | str | dict[str, Any],
+) -> PostgresExtension:
+    """Normalize extension payloads passed by migrations into PostgresExtension."""
+    return normalize_postgres_extension(
+        payload,
+        error_context="Migration extension",
+    )
+
+
 def default_index_name(db_table: str, columns: tuple[str, ...], *, unique: bool) -> str:
     """Return a stable index name given table/columns/uniqueness."""
     cols = "_".join(c.lower() for c in columns)
@@ -200,6 +215,88 @@ class Operation(ABC):
         _ = conn, schema_editor
         msg = f"{self.__class__.__name__} has no rollback SQL renderer"
         raise NotImplementedError(msg)
+
+
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AddExtension(Operation):
+    """Install a PostgreSQL extension required by later schema operations."""
+
+    extension: PostgresExtension | str | dict[str, Any]
+
+    def __post_init__(self) -> None:
+        """Normalize the extension payload so migrations stay deterministic."""
+        self.extension = _extension_from_payload(self.extension)
+
+    async def apply(self, conn, schema_editor) -> None:
+        """Create the extension if it is not already installed."""
+        await schema_editor.add_extension(conn, name=self.extension.name)
+
+    async def unapply(self, conn, schema_editor) -> None:
+        """Drop the installed extension."""
+        await schema_editor.drop_extension(conn, name=self.extension.name)
+
+    async def to_sql(self, conn, schema_editor) -> list[str]:
+        """Return SQL to create the extension."""
+        _ = conn
+        return [schema_editor.sql_add_extension(name=self.extension.name)]
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to drop the extension."""
+        _ = conn
+        return [schema_editor.sql_drop_extension(name=self.extension.name)]
+
+    def mutate_state(self, state: ProjectState) -> None:
+        """Track the extension requirement in the in-memory project state."""
+        state.extensions = normalize_postgres_extensions(
+            [*state.extensions, self.extension],
+            error_context="ProjectState extensions",
+        )
+
+    def to_code(self) -> str:
+        """Return Python code to recreate this operation."""
+        return f"AddExtension(extension={self.extension!r})"
+
+
+@dataclass
+class RemoveExtension(Operation):
+    """Remove a PostgreSQL extension after dependents have been dropped."""
+
+    extension: PostgresExtension | str | dict[str, Any]
+
+    def __post_init__(self) -> None:
+        """Normalize the extension payload so migrations stay deterministic."""
+        self.extension = _extension_from_payload(self.extension)
+
+    async def apply(self, conn, schema_editor) -> None:
+        """Drop the extension if it is installed."""
+        await schema_editor.drop_extension(conn, name=self.extension.name)
+
+    async def unapply(self, conn, schema_editor) -> None:
+        """Recreate the extension."""
+        await schema_editor.add_extension(conn, name=self.extension.name)
+
+    async def to_sql(self, conn, schema_editor) -> list[str]:
+        """Return SQL to drop the extension."""
+        _ = conn
+        return [schema_editor.sql_drop_extension(name=self.extension.name)]
+
+    async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
+        """Return SQL to recreate the extension."""
+        _ = conn
+        return [schema_editor.sql_add_extension(name=self.extension.name)]
+
+    def mutate_state(self, state: ProjectState) -> None:
+        """Remove the extension requirement from the in-memory state."""
+        state.extensions = [
+            extension for extension in state.extensions if extension != self.extension
+        ]
+
+    def to_code(self) -> str:
+        """Return Python code to recreate this operation."""
+        return f"RemoveExtension(extension={self.extension!r})"
 
 
 # ---------------------------------------------------------------------------

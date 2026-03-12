@@ -4,9 +4,11 @@ from enum import StrEnum
 from pathlib import Path
 
 from tortoisemarch.constraints import FieldRef, RawSQL
+from tortoisemarch.extensions import PostgresExtension
 from tortoisemarch.model_state import ConstraintState, FieldState, ModelState
 from tortoisemarch.operations import (
     AddConstraint,
+    AddExtension,
     CreateIndex,
     CreateModel,
     RenameModel,
@@ -205,3 +207,14 @@ def test_write_migration_imports_expression_nodes_for_exclusion_constraints(
         'FieldRef("practitioner")' in content or "FieldRef('practitioner')" in content
     )
     assert "RawSQL(" in content
+
+
+def test_write_migration_imports_postgres_extension_helpers(tmp_path: Path):
+    """Extension codegen should import the typed declaration it renders."""
+    ops = [AddExtension(extension=PostgresExtension("btree_gist"))]
+    path = Path(write_migration(ops, migrations_dir=tmp_path))
+    content = path.read_text(encoding="utf-8")
+
+    assert "from tortoisemarch.extensions import PostgresExtension" in content
+    assert "from tortoisemarch.operations import AddExtension" in content
+    assert "AddExtension(extension=PostgresExtension" in content

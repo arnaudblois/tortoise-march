@@ -7,6 +7,7 @@ import pytest
 from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.differ import diff_states
 from tortoisemarch.exceptions import NotReversibleMigrationError
+from tortoisemarch.extensions import PostgresExtension
 from tortoisemarch.model_state import (
     ConstraintState,
     FieldState,
@@ -16,11 +17,13 @@ from tortoisemarch.model_state import (
 )
 from tortoisemarch.operations import (
     AddConstraint,
+    AddExtension,
     AddField,
     AlterField,
     CreateIndex,
     CreateModel,
     RemoveConstraint,
+    RemoveExtension,
     RemoveField,
     RemoveIndex,
     RemoveModel,
@@ -69,6 +72,23 @@ def test_create_model_mutates_state():
     assert set(m.field_states.keys()) == {"id", "email"}
     assert m.field_states["id"].primary_key is True
     assert m.field_states["email"].max_length == 200  # noqa: PLR2004
+
+
+async def test_extension_operations_render_and_mutate_state():
+    """Extension operations should round-trip through SQL and project state."""
+    state = ProjectState()
+    add = AddExtension(extension=PostgresExtension("btree_gist"))
+
+    add_sql = await add.to_sql(conn=None, schema_editor=PostgresSchemaEditor())
+    assert add_sql == ['CREATE EXTENSION IF NOT EXISTS "btree_gist";']
+    add.mutate_state(state)
+    assert state.extensions == [PostgresExtension("btree_gist")]
+
+    remove = RemoveExtension(extension=PostgresExtension("btree_gist"))
+    remove_sql = await remove.to_sql(conn=None, schema_editor=PostgresSchemaEditor())
+    assert remove_sql == ['DROP EXTENSION IF EXISTS "btree_gist";']
+    remove.mutate_state(state)
+    assert state.extensions == []
 
 
 def test_remove_model_mutates_state():

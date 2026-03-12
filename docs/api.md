@@ -12,6 +12,7 @@ This page documents the public surface we commit to for `0.1.x`.
 - `tortoisemarch.base.BaseMigration`
 - `tortoisemarch.ExclusionConstraint`
 - `tortoisemarch.FieldRef`
+- `tortoisemarch.PostgresExtension`
 - `tortoisemarch.RawSQL`
 - `tortoisemarch.operations.*` migration operation classes
 - `tortoisemarch.migrate.migrate`
@@ -20,6 +21,8 @@ This page documents the public surface we commit to for `0.1.x`.
 ## Notes
 
 - Migration files should subclass `BaseMigration` and declare `operations`.
+- PostgreSQL extension requirements are declared on model `Meta` classes via
+  `tortoisemarch_extensions = (PostgresExtension("btree_gist"),)`.
 - Operation classes are serialized into migration files, so constructor
   signatures are treated as stable in `0.1.x`.
 - Internal modules (`differ`, `extractor`, `schema_editor`, etc.) are

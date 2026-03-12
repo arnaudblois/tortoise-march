@@ -111,6 +111,14 @@ class SchemaEditor(ABC):
     async def rename_model(self, conn, old_table: str, new_table: str) -> None:
         """Rename a table backing a model."""
 
+    @abstractmethod
+    async def add_extension(self, conn: BaseDBAsyncClient, name: str) -> None:
+        """Install a database extension."""
+
+    @abstractmethod
+    async def drop_extension(self, conn: BaseDBAsyncClient, name: str) -> None:
+        """Remove a database extension."""
+
     # ------------ RENDERING API (returns SQL strings only) ------------
 
     @abstractmethod
@@ -192,6 +200,14 @@ class SchemaEditor(ABC):
     @abstractmethod
     def sql_rename_index(self, old_name: str, new_name: str) -> str:
         """Return SQL to rename an index by name."""
+
+    @abstractmethod
+    def sql_add_extension(self, name: str) -> str:
+        """Return SQL to install a database extension."""
+
+    @abstractmethod
+    def sql_drop_extension(self, name: str) -> str:
+        """Return SQL to remove a database extension."""
 
     @abstractmethod
     async def create_index(
@@ -794,6 +810,14 @@ class PostgresSchemaEditor(SchemaEditor):
             f"RENAME TO {self._q_ident(new_name)};"
         )
 
+    def sql_add_extension(self, name: str) -> str:
+        """Return SQL to install a PostgreSQL extension."""
+        return f"CREATE EXTENSION IF NOT EXISTS {self._q_ident(name)};"
+
+    def sql_drop_extension(self, name: str) -> str:
+        """Return SQL to remove a PostgreSQL extension."""
+        return f"DROP EXTENSION IF EXISTS {self._q_ident(name)};"
+
     def sql_add_constraint(
         self,
         db_table: str,
@@ -849,6 +873,14 @@ class PostgresSchemaEditor(SchemaEditor):
         """Execute the SQL to rename a model."""
         sql = self.sql_rename_model(old_table=old_table, new_table=new_table)
         await self._execute(conn, sql)
+
+    async def add_extension(self, conn: BaseDBAsyncClient, name: str) -> None:
+        """Execute the SQL to install a PostgreSQL extension."""
+        await self._execute(conn, self.sql_add_extension(name))
+
+    async def drop_extension(self, conn: BaseDBAsyncClient, name: str) -> None:
+        """Execute the SQL to remove a PostgreSQL extension."""
+        await self._execute(conn, self.sql_drop_extension(name))
 
     async def drop_model(self, conn: BaseDBAsyncClient, db_table: str) -> None:
         """Execute the SQL to drop a model."""

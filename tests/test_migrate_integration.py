@@ -767,6 +767,100 @@ async def test_rollback_sql_preview_does_not_execute_runpython_reverse(
         sys.path.remove(str(tmp_path))
 
 
+async def test_migrate_applies_extensions_before_exclusion_constraints(
+    tmp_path: Path,
+):
+    """Extension operations should replay before dependent exclusion constraints."""
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").touch()
+    sys.path.insert(0, str(tmp_path))
+
+    try:
+        (models_dir / "__init__.py").write_text(
+            textwrap.dedent(
+                """
+                from tortoise import fields, models
+
+                from tortoisemarch.constraints import (
+                    ExclusionConstraint,
+                    FieldRef,
+                    RawSQL,
+                )
+                from tortoisemarch.extensions import PostgresExtension
+
+                class Practitioner(models.Model):
+                    id = fields.UUIDField(primary_key=True)
+
+                class Booking(models.Model):
+                    id = fields.UUIDField(primary_key=True)
+                    practitioner = fields.ForeignKeyField(
+                        "models.Practitioner",
+                        related_name="bookings",
+                    )
+                    start_at = fields.DatetimeField()
+                    end_at = fields.DatetimeField()
+
+                    class Meta:
+                        tortoisemarch_extensions = (
+                            PostgresExtension("btree_gist"),
+                        )
+                        tortoisemarch_constraints = (
+                            ExclusionConstraint(
+                                expressions=(
+                                    (FieldRef("practitioner"), "="),
+                                    (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                                ),
+                                name="bookings_no_overlap_per_practitioner",
+                                index_type="gist",
+                            ),
+                        )
+                """,
+            ),
+        )
+
+        sys.modules.pop("models", None)
+        tortoise_orm = _tortoise_conf("models")
+        await makemigrations(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+        sql_preview = await migrate(
+            tortoise_conf=tortoise_orm,
+            location=migrations_dir,
+            sql=True,
+        )
+        assert sql_preview is not None
+        assert 'CREATE EXTENSION IF NOT EXISTS "btree_gist";' in sql_preview
+        assert 'ADD CONSTRAINT "bookings_no_overlap_per_practitioner"' in sql_preview
+        assert sql_preview.index('CREATE EXTENSION IF NOT EXISTS "btree_gist";') < (
+            sql_preview.index('ADD CONSTRAINT "bookings_no_overlap_per_practitioner"')
+        )
+
+        await migrate(tortoise_conf=tortoise_orm, location=migrations_dir)
+
+        async with tortoise_context(tortoise_orm):
+            conn = Tortoise.get_connection("default")
+            extension_rows = await conn.execute_query_dict(
+                "SELECT extname FROM pg_extension WHERE extname = 'btree_gist';",
+                [],
+            )
+            constraint_rows = await conn.execute_query_dict(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conname = 'bookings_no_overlap_per_practitioner';",
+                [],
+            )
+
+        assert extension_rows == [{"extname": "btree_gist"}]
+        assert constraint_rows == [
+            {"conname": "bookings_no_overlap_per_practitioner"},
+        ]
+    finally:
+        sys.path.remove(str(tmp_path))
+
+
 async def test_migrate_to_target_forward_and_backward(tmp_path: Path):  # noqa: PLR0915
     """Migrate up to a target and back down again."""
     migrations_dir = tmp_path / "migrations"

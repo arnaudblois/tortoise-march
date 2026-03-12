@@ -14,6 +14,7 @@ from tortoise.fields.data import CharEnumFieldInstance, IntEnumFieldInstance
 
 from tortoisemarch.constraints import normalize_exclusion_expressions
 from tortoisemarch.exceptions import InvalidMigrationError
+from tortoisemarch.extensions import PostgresExtension
 from tortoisemarch.model_state import (
     ConstraintKind,
     ConstraintState,
@@ -469,6 +470,48 @@ def _extract_model_constraints(meta: Any, meta_config: Any) -> list[ConstraintSt
     return constraints
 
 
+def _extract_extension_from_meta_entry(entry: Any) -> PostgresExtension:
+    """Convert one model-level extension declaration into PostgresExtension."""
+    if isinstance(entry, PostgresExtension):
+        return entry
+
+    if isinstance(entry, str):
+        msg = (
+            "Meta.tortoisemarch_extensions must contain PostgresExtension objects, "
+            f"not bare strings like {entry!r}."
+        )
+        raise InvalidMigrationError(msg)
+
+    if hasattr(entry, "describe") and callable(entry.describe):
+        described = entry.describe()
+        if isinstance(described, dict) and "PostgresExtension" in str(
+            described.get("type", ""),
+        ):
+            return PostgresExtension.from_dict(described)
+
+    if hasattr(entry, "deconstruct") and callable(entry.deconstruct):
+        path, _args, kwargs = entry.deconstruct()
+        if path.rsplit(".", 1)[-1] == "PostgresExtension":
+            return PostgresExtension.from_dict(kwargs)
+
+    msg = f"Unsupported TortoiseMarch extension declaration: {entry!r}"
+    raise InvalidMigrationError(msg)
+
+
+def _extract_model_extensions(meta: Any, meta_config: Any) -> list[PostgresExtension]:
+    """Extract TortoiseMarch-owned extension declarations from one model."""
+    raw_extensions = list(getattr(meta, "tortoisemarch_extensions", None) or ())
+    raw_extensions.extend(
+        list(getattr(meta_config, "tortoisemarch_extensions", None) or ()),
+    )
+
+    deduped: dict[str, PostgresExtension] = {}
+    for entry in raw_extensions:
+        extension = _extract_extension_from_meta_entry(entry)
+        deduped[extension.name] = extension
+    return [deduped[name] for name in sorted(deduped)]
+
+
 def extract_model_state(model_cls: type[Model]) -> ModelState:
     """Convert a Tortoise model class into a ModelState.
 
@@ -542,6 +585,7 @@ def extract_project_state(
             name_counts[name] = name_counts.get(name, 0) + 1
 
     model_states: dict[str, ModelState] = {}
+    extensions: dict[str, PostgresExtension] = {}
     for app_label, models in apps.items():
         for model_cls in models.values():
             ms = extract_model_state(model_cls)
@@ -549,4 +593,11 @@ def extract_project_state(
             key = name if name_counts.get(name, 0) == 1 else f"{app_label}.{name}"
             ms.name = key
             model_states[key] = ms
-    return ProjectState(model_states=model_states)
+            meta = model_cls._meta  # noqa: SLF001
+            meta_config = getattr(model_cls, "Meta", None)
+            for extension in _extract_model_extensions(meta, meta_config):
+                extensions[extension.name] = extension
+    return ProjectState(
+        model_states=model_states,
+        extensions=[extensions[name] for name in sorted(extensions)],
+    )

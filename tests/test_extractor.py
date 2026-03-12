@@ -8,6 +8,7 @@ from tortoise.contrib.test import tortoise_test_context
 from tortoise.models import Model
 
 from tortoisemarch.constraints import FieldRef, RawSQL
+from tortoisemarch.extensions import PostgresExtension
 from tortoisemarch.extractor import extract_project_state
 from tortoisemarch.model_state import ConstraintState, IndexState, ProjectState
 
@@ -326,6 +327,52 @@ def test_extract_model_state_reads_tortoisemarch_constraints(tmp_path):
                 condition="cancelled_at IS NULL",
             ),
         ]
+    finally:
+        sys.path.remove(str(tmp_path))
+
+
+def test_extract_project_state_dedupes_tortoisemarch_extensions(tmp_path):
+    """Model-local extension declarations should become project-level requirements."""
+    mod = tmp_path / "extension_models.py"
+    mod.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            from tortoisemarch.extensions import PostgresExtension
+
+            class Practitioner(models.Model):
+                id = fields.UUIDField(primary_key=True)
+
+                class Meta:
+                    tortoisemarch_extensions = (
+                        PostgresExtension("btree_gist"),
+                    )
+
+            class Booking(models.Model):
+                id = fields.UUIDField(primary_key=True)
+                practitioner = fields.ForeignKeyField(
+                    "models.Practitioner",
+                    related_name="bookings",
+                )
+
+                class Meta:
+                    tortoisemarch_extensions = (
+                        PostgresExtension("BTREE_GIST"),
+                    )
+            """,
+        ),
+    )
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        from extension_models import Booking, Practitioner  # noqa: PLC0415
+
+        state = extract_project_state(
+            apps={"default": {"Booking": Booking, "Practitioner": Practitioner}},
+        )
+
+        assert state.extensions == [PostgresExtension("btree_gist")]
     finally:
         sys.path.remove(str(tmp_path))
 

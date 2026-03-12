@@ -756,6 +756,18 @@ def test_sql_constraint_helpers_render_postgres_constraints():
     )
 
 
+def test_sql_extension_helpers_render_postgres_extensions():
+    """Extension SQL helpers should emit deterministic Postgres DDL."""
+    ed = PostgresSchemaEditor()
+
+    assert ed.sql_add_extension("btree_gist") == (
+        'CREATE EXTENSION IF NOT EXISTS "btree_gist";'
+    )
+    assert ed.sql_drop_extension("btree_gist") == (
+        'DROP EXTENSION IF EXISTS "btree_gist";'
+    )
+
+
 def test_sql_add_constraint_maps_unique_columns_to_physical_names():
     """Unique constraint SQL should use physical DB column names when provided."""
     ed = PostgresSchemaEditor()

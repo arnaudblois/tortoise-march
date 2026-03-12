@@ -2,6 +2,7 @@
 
 from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.differ import diff_states
+from tortoisemarch.extensions import PostgresExtension
 from tortoisemarch.model_state import (
     ConstraintState,
     FieldState,
@@ -11,11 +12,13 @@ from tortoisemarch.model_state import (
 )
 from tortoisemarch.operations import (
     AddConstraint,
+    AddExtension,
     AddField,
     AlterField,
     CreateIndex,
     CreateModel,
     RemoveConstraint,
+    RemoveExtension,
     RemoveField,
     RemoveIndex,
     RemoveModel,
@@ -58,9 +61,16 @@ def model(  # noqa: PLR0913
     )
 
 
-def project(model_states: dict[str, ModelState]) -> ProjectState:
+def project(
+    model_states: dict[str, ModelState],
+    *,
+    extensions: list[PostgresExtension] | None = None,
+) -> ProjectState:
     """Wrap a dict of ModelState into a ProjectState."""
-    return ProjectState(model_states=model_states)
+    return ProjectState(
+        model_states=model_states,
+        extensions=list(extensions or []),
+    )
 
 
 def test_create_model():
@@ -687,6 +697,130 @@ def test_removed_constraints_keep_field_column_map_for_rollbacks():
         "practitioner": "practitioner_id",
         "slot": "slot_key",
     }
+
+
+def test_project_extensions_diff_before_dependent_constraints():
+    """Project extensions should be added before dependent schema objects."""
+    new = project(
+        {
+            "Practitioner": model(
+                "Practitioner",
+                [("id", "UUIDField", {"primary_key": True})],
+            ),
+            "Booking": model(
+                "Booking",
+                [
+                    ("id", "UUIDField", {"primary_key": True}),
+                    (
+                        "practitioner",
+                        "ForeignKeyFieldInstance",
+                        {
+                            "related_table": "practitioner",
+                            "referenced_type": "UUIDField",
+                            "to_field": "id",
+                        },
+                    ),
+                    ("start_at", "DatetimeField", {}),
+                    ("end_at", "DatetimeField", {}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="exclude",
+                        name="booking_practitioner_window_excl",
+                        expressions=(
+                            (FieldRef("practitioner"), "="),
+                            (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                        ),
+                        index_type="gist",
+                    ),
+                ],
+            ),
+        },
+        extensions=[PostgresExtension("btree_gist")],
+    )
+
+    ops = diff_states(project({}), new)
+
+    assert isinstance(ops[0], AddExtension)
+    assert ops[0].extension == PostgresExtension("btree_gist")
+    assert any(isinstance(op, AddConstraint) for op in ops)
+    assert next(i for i, op in enumerate(ops) if isinstance(op, AddExtension)) < next(
+        i for i, op in enumerate(ops) if isinstance(op, AddConstraint)
+    )
+
+
+def test_project_extensions_remove_after_dependents():
+    """Extensions should drop only after dependent constraints are removed."""
+    old = project(
+        {
+            "Practitioner": model(
+                "Practitioner",
+                [("id", "UUIDField", {"primary_key": True})],
+            ),
+            "Booking": model(
+                "Booking",
+                [
+                    ("id", "UUIDField", {"primary_key": True}),
+                    (
+                        "practitioner",
+                        "ForeignKeyFieldInstance",
+                        {
+                            "related_table": "practitioner",
+                            "referenced_type": "UUIDField",
+                            "to_field": "id",
+                        },
+                    ),
+                    ("start_at", "DatetimeField", {}),
+                    ("end_at", "DatetimeField", {}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="exclude",
+                        name="booking_practitioner_window_excl",
+                        expressions=(
+                            (FieldRef("practitioner"), "="),
+                            (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                        ),
+                        index_type="gist",
+                    ),
+                ],
+            ),
+        },
+        extensions=[PostgresExtension("btree_gist")],
+    )
+    new = project(
+        {
+            "Practitioner": model(
+                "Practitioner",
+                [("id", "UUIDField", {"primary_key": True})],
+            ),
+            "Booking": model(
+                "Booking",
+                [
+                    ("id", "UUIDField", {"primary_key": True}),
+                    (
+                        "practitioner",
+                        "ForeignKeyFieldInstance",
+                        {
+                            "related_table": "practitioner",
+                            "referenced_type": "UUIDField",
+                            "to_field": "id",
+                        },
+                    ),
+                    ("start_at", "DatetimeField", {}),
+                    ("end_at", "DatetimeField", {}),
+                ],
+            ),
+        },
+    )
+
+    ops = diff_states(old, new)
+
+    assert any(isinstance(op, RemoveConstraint) for op in ops)
+    assert isinstance(ops[-1], RemoveExtension)
+    assert next(i for i, op in enumerate(ops) if isinstance(op, RemoveConstraint)) < (
+        next(i for i, op in enumerate(ops) if isinstance(op, RemoveExtension))
+    )
 
 
 def test_exclusion_constraints_treat_strings_and_fieldrefs_as_equivalent():
