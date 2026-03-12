@@ -296,15 +296,49 @@ def _physical_index_columns(ms: ModelState, cols: tuple[str, ...]) -> tuple[str,
     return tuple(physical)
 
 
-def _field_column_map(ms: ModelState) -> dict[str, str]:
-    """Return a stable logical-field to physical-column mapping for one model."""
-    mapping: dict[str, str] = {}
-    for field_state in _schema_fields(ms).values():
-        mapping[field_state.name.lower()] = _physical_index_columns(
-            ms,
-            (field_state.name,),
-        )[0]
-    return mapping
+def _constraint_field_names(constraint: ConstraintState) -> set[str]:
+    """Return logical field names referenced by one constraint payload."""
+    if constraint.kind == ConstraintKind.UNIQUE:
+        return {column.lower() for column in constraint.columns}
+
+    if constraint.kind == ConstraintKind.EXCLUDE:
+        return {
+            expression.name.lower()
+            for expression, _operator in constraint.expressions
+            if isinstance(expression, FieldRef)
+        }
+
+    return set()
+
+
+def _constraint_column_hints(
+    model_state: ModelState,
+    constraint: ConstraintState,
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Return the minimal metadata needed to render one constraint correctly.
+
+    We keep custom physical-column overrides explicit, but we rely on the
+    standard `<field>_id` convention for relational fields so generated
+    migrations do not repeat that mapping noisily.
+    """
+    field_names = _constraint_field_names(constraint)
+    if not field_names:
+        return {}, ()
+
+    custom_column_map: dict[str, str] = {}
+    fk_fields: list[str] = []
+    for field_name in sorted(field_names):
+        field_state = _schema_fields(model_state).get(field_name)
+        if field_state is None:
+            continue
+        physical_name = _physical_index_columns(model_state, (field_state.name,))[0]
+        if field_state.options.get("db_column"):
+            custom_column_map[field_name] = physical_name
+            continue
+        if field_state.field_type in FK_TYPES:
+            fk_fields.append(field_name)
+
+    return custom_column_map, tuple(fk_fields)
 
 
 def _project_extensions(state: ProjectState) -> dict[str, PostgresExtension]:
@@ -878,6 +912,14 @@ def _diff_model_constraints(
     model_name: str,
 ) -> None:
     """Append constraint operations to transform old_model constraints -> new_model."""
+
+    def rendering_hints(
+        model_state: ModelState,
+        constraint: ConstraintState,
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        """Return the compact rendering metadata for one constraint."""
+        return _constraint_column_hints(model_state, constraint)
+
     old_groups: dict[tuple[Any, ...], list[tuple[ConstraintState, ConstraintState]]] = (
         defaultdict(list)
     )
@@ -926,7 +968,8 @@ def _diff_model_constraints(
                 db_table=new_model.db_table,
                 constraint=constraint,
                 name=constraint_db_name(old_model.db_table, normalized_constraint),
-                field_column_map=_field_column_map(old_model),
+                field_column_map=rendering_hints(old_model, constraint)[0],
+                fk_fields=rendering_hints(old_model, constraint)[1],
             )
             for normalized_constraint, constraint in old_group[shared:]
         )
@@ -937,7 +980,8 @@ def _diff_model_constraints(
                 db_table=new_model.db_table,
                 constraint=constraint,
                 name=constraint_db_name(new_model.db_table, normalized_constraint),
-                field_column_map=_field_column_map(new_model),
+                field_column_map=rendering_hints(new_model, constraint)[0],
+                fk_fields=rendering_hints(new_model, constraint)[1],
             )
             for normalized_constraint, constraint in new_group[shared:]
         )

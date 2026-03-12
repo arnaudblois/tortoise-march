@@ -779,7 +779,8 @@ def test_sql_add_constraint_maps_unique_columns_to_physical_names():
             name="booking_practitioner_slot_uniq",
             columns=("practitioner", "slot"),
         ),
-        field_column_map={"practitioner": "practitioner_id", "slot": "slot_key"},
+        field_column_map={"slot": "slot_key"},
+        fk_fields=("practitioner",),
     )
 
     assert (
@@ -804,7 +805,7 @@ def test_sql_add_constraint_renders_exclusion_fieldrefs_and_raw_sql():
             index_type="gist",
             condition="status IN ('held', 'confirmed', 'completed', 'no_show')",
         ),
-        field_column_map={"practitioner": "practitioner_id"},
+        fk_fields=("practitioner",),
     )
 
     assert (

@@ -240,6 +240,7 @@ class SchemaEditor(ABC):
         db_table: str,
         constraint: ConstraintState,
         field_column_map: dict[str, str] | None = None,
+        fk_fields: tuple[str, ...] | None = None,
     ) -> str:
         """Return SQL to add a model-level constraint."""
 
@@ -263,6 +264,7 @@ class SchemaEditor(ABC):
         db_table: str,
         constraint: ConstraintState,
         field_column_map: dict[str, str] | None = None,
+        fk_fields: tuple[str, ...] | None = None,
     ) -> None:
         """Create a model-level constraint."""
 
@@ -389,16 +391,38 @@ class PostgresSchemaEditor(SchemaEditor):
         """Return SQL to drop an index by name."""
         return f"DROP INDEX IF EXISTS {self._q_ident(name)};"
 
+    def _resolve_constraint_column(
+        self,
+        logical_name: str,
+        *,
+        field_column_map: dict[str, str] | None = None,
+        fk_fields: tuple[str, ...] | None = None,
+    ) -> str:
+        """Resolve one logical constraint reference to its DB column name."""
+        normalized = logical_name.lower()
+        if field_column_map and normalized in field_column_map:
+            return field_column_map[normalized]
+        if normalized in {field.lower() for field in fk_fields or ()}:
+            return f"{logical_name}_id"
+        return logical_name
+
     def _render_constraint_sql(
         self,
         db_table: str,
         constraint: ConstraintState,
         field_column_map: dict[str, str] | None = None,
+        fk_fields: tuple[str, ...] | None = None,
     ) -> str:
         """Render the body of a Postgres model-level constraint definition."""
         if constraint.kind == ConstraintKind.UNIQUE:
             columns = ", ".join(
-                self._q_ident((field_column_map or {}).get(column.lower(), column))
+                self._q_ident(
+                    self._resolve_constraint_column(
+                        column,
+                        field_column_map=field_column_map,
+                        fk_fields=fk_fields,
+                    ),
+                )
                 for column in constraint.columns
             )
             return (
@@ -414,9 +438,10 @@ class PostgresSchemaEditor(SchemaEditor):
             rendered_expressions: list[str] = []
             for expression, operator in constraint.expressions:
                 if isinstance(expression, FieldRef):
-                    column_name = (field_column_map or {}).get(
+                    column_name = self._resolve_constraint_column(
                         expression.name,
-                        expression.name,
+                        field_column_map=field_column_map,
+                        fk_fields=fk_fields,
                     )
                     rendered = self._q_ident(column_name)
                 elif isinstance(expression, RawSQL):
@@ -823,12 +848,14 @@ class PostgresSchemaEditor(SchemaEditor):
         db_table: str,
         constraint: ConstraintState,
         field_column_map: dict[str, str] | None = None,
+        fk_fields: tuple[str, ...] | None = None,
     ) -> str:
         """Return SQL to add a model-level constraint."""
         rendered_constraint = self._render_constraint_sql(
             db_table,
             constraint,
             field_column_map,
+            fk_fields,
         )
         return (
             f"ALTER TABLE {self._q_ident(db_table.lower())} "
@@ -993,12 +1020,14 @@ class PostgresSchemaEditor(SchemaEditor):
         db_table: str,
         constraint: ConstraintState,
         field_column_map: dict[str, str] | None = None,
+        fk_fields: tuple[str, ...] | None = None,
     ) -> None:
         """Execute SQL to add a model-level constraint."""
         sql = self.sql_add_constraint(
             db_table=db_table,
             constraint=constraint,
             field_column_map=field_column_map,
+            fk_fields=fk_fields,
         )
         await self._execute(conn, sql)
 

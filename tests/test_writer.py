@@ -191,7 +191,7 @@ def test_write_migration_imports_expression_nodes_for_exclusion_constraints(
                         ),
                         index_type="gist",
                     ),
-                    field_column_map={"practitioner": "practitioner_id"},
+                    fk_fields=("practitioner",),
                 ),
             ],
             migrations_dir=tmp_path,

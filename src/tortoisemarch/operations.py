@@ -151,6 +151,11 @@ def _extension_from_payload(
     )
 
 
+def _normalize_field_name_hints(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Normalize field-name hint payloads into a deterministic tuple."""
+    return tuple(sorted({str(value).lower() for value in values}))
+
+
 def default_index_name(db_table: str, columns: tuple[str, ...], *, unique: bool) -> str:
     """Return a stable index name given table/columns/uniqueness."""
     cols = "_".join(c.lower() for c in columns)
@@ -1094,11 +1099,17 @@ class AddConstraint(Operation):
     constraint: ConstraintState | dict[str, Any]
     name: str | None = None
     field_column_map: dict[str, str] = field(default_factory=dict)
+    fk_fields: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        """Normalize constraint rendering hints into a stable payload."""
         self.constraint = _constraint_from_payload(self.constraint)
         if self.name is None:
             self.name = constraint_db_name(self.db_table, self.constraint)
+        self.field_column_map = {
+            str(key).lower(): str(value) for key, value in self.field_column_map.items()
+        }
+        self.fk_fields = _normalize_field_name_hints(self.fk_fields)
 
     async def apply(self, conn, schema_editor) -> None:
         """Create the constraint on the table."""
@@ -1107,6 +1118,7 @@ class AddConstraint(Operation):
             db_table=self.db_table,
             constraint=self.constraint,
             field_column_map=self.field_column_map or None,
+            fk_fields=self.fk_fields or None,
         )
 
     async def unapply(self, conn, schema_editor) -> None:
@@ -1125,6 +1137,7 @@ class AddConstraint(Operation):
                 db_table=self.db_table,
                 constraint=self.constraint,
                 field_column_map=self.field_column_map or None,
+                fk_fields=self.fk_fields or None,
             ),
         ]
 
@@ -1154,6 +1167,8 @@ class AddConstraint(Operation):
         )
         if self.field_column_map:
             base += f", field_column_map={self.field_column_map!r}"
+        if self.fk_fields:
+            base += f", fk_fields={self.fk_fields!r}"
         base += ")"
         return base
 
@@ -1167,11 +1182,17 @@ class RemoveConstraint(Operation):
     constraint: ConstraintState | dict[str, Any]
     name: str | None = None
     field_column_map: dict[str, str] = field(default_factory=dict)
+    fk_fields: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        """Normalize constraint rendering hints into a stable payload."""
         self.constraint = _constraint_from_payload(self.constraint)
         if self.name is None:
             self.name = constraint_db_name(self.db_table, self.constraint)
+        self.field_column_map = {
+            str(key).lower(): str(value) for key, value in self.field_column_map.items()
+        }
+        self.fk_fields = _normalize_field_name_hints(self.fk_fields)
 
     async def apply(self, conn, schema_editor) -> None:
         """Drop the constraint."""
@@ -1188,6 +1209,7 @@ class RemoveConstraint(Operation):
             db_table=self.db_table,
             constraint=self.constraint,
             field_column_map=self.field_column_map or None,
+            fk_fields=self.fk_fields or None,
         )
 
     async def to_sql(self, conn, schema_editor) -> list[str]:
@@ -1208,6 +1230,7 @@ class RemoveConstraint(Operation):
                 db_table=self.db_table,
                 constraint=self.constraint,
                 field_column_map=self.field_column_map or None,
+                fk_fields=self.fk_fields or None,
             ),
         ]
 
@@ -1230,6 +1253,8 @@ class RemoveConstraint(Operation):
         )
         if self.field_column_map:
             base += f", field_column_map={self.field_column_map!r}"
+        if self.fk_fields:
+            base += f", fk_fields={self.fk_fields!r}"
         base += ")"
         return base
 

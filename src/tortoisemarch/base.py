@@ -50,8 +50,14 @@ class BaseMigration:
 
     @staticmethod
     def _replace_state(target: ProjectState, source: ProjectState) -> None:
-        """Replace one project state's model mapping with another."""
+        """Replace one tracked project state with another.
+
+        We copy every project-level field we track here so rollback paths keep
+        the in-memory state aligned with the schema state seen by later
+        operations and callers.
+        """
         target.model_states = deepcopy(source.model_states)
+        target.extensions = deepcopy(source.extensions)
 
     @classmethod
     async def apply(

@@ -13,6 +13,7 @@ from tortoisemarch.exceptions import (
     NotReversibleMigrationError,
     TortoiseMarchError,
 )
+from tortoisemarch.extensions import PostgresExtension
 from tortoisemarch.migrate import (
     migrate,
     plan_route,
@@ -20,7 +21,9 @@ from tortoisemarch.migrate import (
     tortoise_context,
     validate_applied_migration_checksums,
 )
+from tortoisemarch.model_state import ProjectState
 from tortoisemarch.operations import (
+    AddExtension,
     AddField,
     AlterField,
     CreateModel,
@@ -257,6 +260,29 @@ async def test_unapply_sql_for_addfield_uses_db_column_override():
     )
 
     assert statements == ['ALTER TABLE "book" DROP COLUMN IF EXISTS "author_id";']
+
+
+@pytest.mark.asyncio
+async def test_unapply_tracked_state_restores_project_extensions():
+    """Tracked rollbacks should restore project-level extension requirements."""
+
+    class Migration(BaseMigration):
+        operations: ClassVar[list[Operation]] = [
+            AddExtension(extension=PostgresExtension("btree_gist")),
+        ]
+
+    current_state = ProjectState(extensions=[PostgresExtension("btree_gist")])
+    previous_state = ProjectState()
+
+    await Migration.unapply(
+        _Recorder(),
+        PostgresSchemaEditor(),
+        state=current_state,
+        previous_state=previous_state,
+    )
+
+    assert current_state == previous_state
+    assert current_state.extensions == []
 
 
 @pytest.mark.asyncio

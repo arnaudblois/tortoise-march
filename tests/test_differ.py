@@ -606,7 +606,7 @@ def test_exclusion_constraints_emit_add_remove_and_rename():
     assert any(isinstance(op, AddConstraint) for op in ops_changed)
 
 
-def test_exclusion_constraints_keep_typed_nodes_and_field_column_map():
+def test_exclusion_constraints_keep_typed_nodes_and_fk_hints():
     """AddConstraint should preserve typed expressions and FK column resolution."""
     new = project(
         {
@@ -649,11 +649,12 @@ def test_exclusion_constraints_keep_typed_nodes_and_field_column_map():
         (FieldRef("practitioner"), "="),
         (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
     )
-    assert adds[0].field_column_map["practitioner"] == "practitioner_id"
+    assert adds[0].field_column_map == {}
+    assert adds[0].fk_fields == ("practitioner",)
 
 
-def test_removed_constraints_keep_field_column_map_for_rollbacks():
-    """RemoveConstraint should preserve DB-column mappings needed for rollback SQL."""
+def test_removed_constraints_keep_minimal_column_hints_for_rollbacks():
+    """RemoveConstraint should keep only the rendering hints rollback needs."""
     fields = {
         "related_table": "practitioner",
         "referenced_type": "IntField",
@@ -693,10 +694,8 @@ def test_removed_constraints_keep_field_column_map_for_rollbacks():
 
     removes = [op for op in ops if isinstance(op, RemoveConstraint)]
     assert len(removes) == 1
-    assert removes[0].field_column_map == {
-        "practitioner": "practitioner_id",
-        "slot": "slot_key",
-    }
+    assert removes[0].field_column_map == {"slot": "slot_key"}
+    assert removes[0].fk_fields == ("practitioner",)
 
 
 def test_project_extensions_diff_before_dependent_constraints():

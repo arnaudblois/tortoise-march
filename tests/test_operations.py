@@ -730,8 +730,8 @@ async def test_exclusion_constraint_operations_render_and_mutate_state():
     assert state.model_states["Booking"].constraints == [constraint]
 
 
-async def test_remove_constraint_rollback_uses_field_column_map():
-    """Rollback SQL should keep logical constraint columns aligned to DB columns."""
+async def test_remove_constraint_rollback_uses_fk_hints_and_custom_column_map():
+    """Rollback SQL should use both FK conventions and custom DB columns."""
     remove = RemoveConstraint(
         model_name="Booking",
         db_table="booking",
@@ -740,10 +740,8 @@ async def test_remove_constraint_rollback_uses_field_column_map():
             name="booking_practitioner_slot_uniq",
             columns=("practitioner", "slot"),
         ),
-        field_column_map={
-            "practitioner": "practitioner_id",
-            "slot": "slot_key",
-        },
+        field_column_map={"slot": "slot_key"},
+        fk_fields=("practitioner",),
     )
 
     rollback_sql = await remove.to_sql_unapply(
@@ -790,7 +788,7 @@ def test_add_constraint_to_code_renders_expression_nodes_readably():
             ),
             index_type="gist",
         ),
-        field_column_map={"practitioner": "practitioner_id"},
+        fk_fields=("practitioner",),
     )
 
     code = op.to_code()
@@ -798,10 +796,10 @@ def test_add_constraint_to_code_renders_expression_nodes_readably():
     assert "ConstraintState(" in code
     assert "FieldRef('practitioner')" in code
     assert "RawSQL(" in code
-    assert "'practitioner': 'practitioner_id'" in code
+    assert "fk_fields=('practitioner',)" in code
 
 
-def test_remove_constraint_to_code_renders_field_column_map():
+def test_remove_constraint_to_code_renders_minimal_column_hints():
     """Rollback metadata should round-trip through generated migration code."""
     op = RemoveConstraint(
         model_name="Booking",
@@ -811,7 +809,7 @@ def test_remove_constraint_to_code_renders_field_column_map():
             name="booking_practitioner_slot_uniq",
             columns=("practitioner", "slot"),
         ),
-        field_column_map={"practitioner": "practitioner_id"},
+        fk_fields=("practitioner",),
     )
 
     assert op.to_code() == (
@@ -819,7 +817,7 @@ def test_remove_constraint_to_code_renders_field_column_map():
         "constraint=ConstraintState(kind='unique', "
         "name='booking_practitioner_slot_uniq', columns=('practitioner', 'slot')), "
         "name='booking_practitioner_slot_uniq', "
-        "field_column_map={'practitioner': 'practitioner_id'})"
+        "fk_fields=('practitioner',))"
     )
 
 
