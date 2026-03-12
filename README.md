@@ -323,7 +323,11 @@ one of:
 Tortoise March validates `FieldRef(...)` names against the extracted model
 schema, resolves logical field names to physical database columns when needed,
 and renders PostgreSQL `EXCLUDE USING ...` DDL during migration. `RawSQL(...)`
-is emitted verbatim and is not introspected further.
+is emitted verbatim, but PostgreSQL still requires exclusion/index expressions
+to be immutable. In particular, buffered `tstzrange(...)` expressions that add
+or subtract intervals from `timestamptz` values are rejected by PostgreSQL and
+therefore rejected by TortoiseMarch too. If you need a buffered booking window,
+store that range in a real column and reference the column with `FieldRef(...)`.
 
 #### PostgreSQL Extensions
 

@@ -41,6 +41,27 @@ def test_exclusion_constraint_accepts_raw_sql_nodes():
     )
 
 
+def test_exclusion_constraint_rejects_buffered_tstzrange_expressions():
+    """Buffered timestamptz range expressions should fail before migration replay."""
+    with pytest.raises(ValueError, match="Buffered tstzrange"):
+        ExclusionConstraint(
+            expressions=(
+                (FieldRef("practitioner"), "="),
+                (
+                    RawSQL(
+                        "tstzrange("
+                        "start_at - interval '45 minutes', "
+                        "end_at + interval '45 minutes', "
+                        "'[)'"
+                        ")",
+                    ),
+                    "&&",
+                ),
+            ),
+            index_type="gist",
+        )
+
+
 def test_exclusion_constraint_rejects_empty_raw_sql():
     """Empty RawSQL fragments should fail fast during normalization."""
     with pytest.raises(ValueError, match="non-empty SQL fragment"):

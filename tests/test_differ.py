@@ -698,6 +698,40 @@ def test_removed_constraints_keep_minimal_column_hints_for_rollbacks():
     assert removes[0].fk_fields == ("practitioner",)
 
 
+def test_added_unique_constraints_keep_conventional_fk_columns_out_of_map():
+    """AddConstraint should treat conventional FK columns as FK hints, not overrides."""
+    fields = {
+        "related_table": "practitioner",
+        "referenced_type": "IntField",
+        "to_field": "id",
+    }
+    new = project(
+        {
+            "Booking": model(
+                "Booking",
+                [
+                    ("location", "ForeignKeyFieldInstance", fields),
+                    ("practitioner", "ForeignKeyFieldInstance", fields),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="unique",
+                        name="booking_location_practitioner_uniq",
+                        columns=("location", "practitioner"),
+                    ),
+                ],
+            ),
+        },
+    )
+
+    ops = diff_states(project({}), new)
+
+    adds = [op for op in ops if isinstance(op, AddConstraint)]
+    assert len(adds) == 1
+    assert adds[0].field_column_map == {}
+    assert adds[0].fk_fields == ("location", "practitioner")
+
+
 def test_project_extensions_diff_before_dependent_constraints():
     """Project extensions should be added before dependent schema objects."""
     new = project(

@@ -5,10 +5,15 @@ projects can declare Postgres features that Tortoise does not model yet while
 still letting Tortoise March diff and render them cleanly.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
 EXCLUSION_EXPRESSION_PARTS = 2
+_BUFFERED_TSTZRANGE_RE = re.compile(
+    r"\btstzrange\s*\([^)]*\b(?:interval|[-+])\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -132,6 +137,33 @@ def normalize_exclusion_expressions(
     return tuple(normalized_expressions)
 
 
+def validate_exclusion_expression_immutability(
+    expressions: tuple[ExclusionExpression, ...],
+) -> None:
+    """Reject known PostgreSQL-invalid exclusion index expressions early.
+
+    PostgreSQL implements exclusion constraints via indexes, so every indexed
+    expression must be immutable. Buffered `tstzrange(...)` expressions that
+    add or subtract intervals from `timestamptz` values fail at migration time
+    with `functions in index expression must be marked IMMUTABLE`.
+
+    We reject that pattern here with a clear library-level error so projects do
+    not discover it only after generating and running a migration.
+    """
+    for node, _operator in expressions:
+        if not isinstance(node, RawSQL):
+            continue
+        if _BUFFERED_TSTZRANGE_RE.search(node.sql):
+            msg = (
+                "Buffered tstzrange(...) exclusion expressions are not supported. "
+                "PostgreSQL requires exclusion index expressions to be IMMUTABLE, "
+                "and timestamptz +/- interval does not satisfy that requirement. "
+                "Store the buffered range in a real column and reference that "
+                "column with FieldRef(...) instead."
+            )
+            raise ValueError(msg)
+
+
 def exclusion_expressions_to_dict(
     expressions: tuple[ExclusionExpression, ...],
 ) -> list[dict[str, Any]]:
@@ -163,6 +195,7 @@ class ExclusionConstraint:
             self.expressions,
             error_context="ExclusionConstraint",
         )
+        validate_exclusion_expression_immutability(normalized_expressions)
 
         index_type = str(self.index_type).strip().lower()
         if not index_type:

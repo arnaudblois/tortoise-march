@@ -332,7 +332,12 @@ def _constraint_column_hints(
         if field_state is None:
             continue
         physical_name = _physical_index_columns(model_state, (field_state.name,))[0]
-        if field_state.options.get("db_column"):
+        default_physical_name = (
+            f"{field_state.name}_id"
+            if field_state.field_type in FK_TYPES
+            else field_state.name
+        )
+        if physical_name != default_physical_name:
             custom_column_map[field_name] = physical_name
             continue
         if field_state.field_type in FK_TYPES:
