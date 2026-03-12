@@ -10,6 +10,12 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from tortoisemarch.constraints import (
+    ExclusionExpression,
+    exclusion_expressions_to_dict,
+    normalize_exclusion_expressions,
+)
+
 
 class ConstraintKind(StrEnum):
     """Supported kinds of model-level constraints."""
@@ -131,14 +137,14 @@ class ConstraintState:
     Currently supported kinds:
     - ``unique`` with ``columns``
     - ``check`` with ``check``
-    - ``exclude`` with ``expressions`` and ``index_type``
+    - ``exclude`` with typed ``expressions`` and ``index_type``
     """
 
     kind: ConstraintKind | str
     name: str | None = None
     columns: tuple[str, ...] = ()
     check: str | None = None
-    expressions: tuple[tuple[str, str], ...] = ()
+    expressions: tuple[ExclusionExpression, ...] = ()
     index_type: str = ""
     condition: str | None = None
 
@@ -178,9 +184,6 @@ class ConstraintState:
 
     def _validate_exclude(self) -> None:
         """Validate the payload for an exclusion constraint."""
-        if not self.expressions:
-            msg = "Exclusion constraints require at least one expression."
-            raise ValueError(msg)
         if not self.index_type:
             msg = "Exclusion constraints require an index_type."
             raise ValueError(msg)
@@ -203,6 +206,14 @@ class ConstraintState:
         if self.kind == ConstraintKind.CHECK:
             self._validate_check()
             return
+        object.__setattr__(
+            self,
+            "expressions",
+            normalize_exclusion_expressions(
+                self.expressions,
+                error_context="Exclusion constraints",
+            ),
+        )
         self._validate_exclude()
 
     def to_dict(self) -> dict[str, Any]:
@@ -216,7 +227,7 @@ class ConstraintState:
         if self.check is not None:
             data["check"] = self.check
         if self.expressions:
-            data["expressions"] = [list(expression) for expression in self.expressions]
+            data["expressions"] = exclusion_expressions_to_dict(self.expressions)
         if self.index_type:
             data["index_type"] = self.index_type
         if self.condition is not None:
@@ -231,10 +242,7 @@ class ConstraintState:
             name=data.get("name"),
             columns=tuple(data.get("columns", ()) or ()),
             check=data.get("check"),
-            expressions=tuple(
-                (str(expression[0]), str(expression[1]))
-                for expression in (data.get("expressions", ()) or ())
-            ),
+            expressions=tuple(data.get("expressions", ()) or ()),
             index_type=str(data.get("index_type", "")),
             condition=data.get("condition"),
         )
@@ -247,6 +255,23 @@ class ConstraintState:
         if self.kind == ConstraintKind.CHECK:
             return (self.kind, self.check)
         return (self.kind, self.expressions, self.index_type, self.condition)
+
+    def to_code(self) -> str:
+        """Render a readable Python constructor expression for migration code."""
+        parts = [f"kind={self.kind.value!r}"]
+        if self.name is not None:
+            parts.append(f"name={self.name!r}")
+        if self.columns:
+            parts.append(f"columns={self.columns!r}")
+        if self.check is not None:
+            parts.append(f"check={self.check!r}")
+        if self.expressions:
+            parts.append(f"expressions={self.expressions!r}")
+        if self.index_type:
+            parts.append(f"index_type={self.index_type!r}")
+        if self.condition is not None:
+            parts.append(f"condition={self.condition!r}")
+        return f"ConstraintState({', '.join(parts)})"
 
 
 @dataclass

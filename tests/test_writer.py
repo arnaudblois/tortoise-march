@@ -3,8 +3,14 @@
 from enum import StrEnum
 from pathlib import Path
 
-from tortoisemarch.model_state import FieldState, ModelState
-from tortoisemarch.operations import CreateIndex, CreateModel, RenameModel
+from tortoisemarch.constraints import FieldRef, RawSQL
+from tortoisemarch.model_state import ConstraintState, FieldState, ModelState
+from tortoisemarch.operations import (
+    AddConstraint,
+    CreateIndex,
+    CreateModel,
+    RenameModel,
+)
 from tortoisemarch.writer import write_migration
 
 
@@ -162,3 +168,40 @@ def test_compaction_removes_redundant_pk_flags(tmp_path: Path):
     op = CreateModel.from_model_state(ms)
     _, _, opts = op.fields[0]
     assert opts == {"primary_key": True}
+
+
+def test_write_migration_imports_expression_nodes_for_exclusion_constraints(
+    tmp_path: Path,
+):
+    """Constraint codegen should import the helper nodes it renders."""
+    path = Path(
+        write_migration(
+            [
+                AddConstraint(
+                    model_name="Booking",
+                    db_table="booking",
+                    constraint=ConstraintState(
+                        kind="exclude",
+                        name="booking_practitioner_window_excl",
+                        expressions=(
+                            (FieldRef("practitioner"), "="),
+                            (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                        ),
+                        index_type="gist",
+                    ),
+                    field_column_map={"practitioner": "practitioner_id"},
+                ),
+            ],
+            migrations_dir=tmp_path,
+        ),
+    )
+    content = path.read_text(encoding="utf-8")
+
+    assert "from tortoisemarch.constraints import FieldRef, RawSQL" in content
+    assert (
+        "from tortoisemarch.operations import AddConstraint, ConstraintState" in content
+    )
+    assert (
+        'FieldRef("practitioner")' in content or "FieldRef('practitioner')" in content
+    )
+    assert "RawSQL(" in content

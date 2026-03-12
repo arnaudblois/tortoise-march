@@ -7,6 +7,7 @@ from tortoise import Tortoise, fields
 from tortoise.contrib.test import tortoise_test_context
 from tortoise.models import Model
 
+from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.extractor import extract_project_state
 from tortoisemarch.model_state import ConstraintState, IndexState, ProjectState
 
@@ -320,7 +321,74 @@ def test_extract_model_state_reads_tortoisemarch_constraints(tmp_path):
             ConstraintState(
                 kind="exclude",
                 name="booking_room_timespan_excl",
-                expressions=(("room", "="), ("timespan", "&&")),
+                expressions=((FieldRef("room"), "="), (FieldRef("timespan"), "&&")),
+                index_type="gist",
+                condition="cancelled_at IS NULL",
+            ),
+        ]
+    finally:
+        sys.path.remove(str(tmp_path))
+
+
+def test_extract_model_state_reads_expression_nodes_in_tortoisemarch_constraints(
+    tmp_path,
+):
+    """Typed exclusion-expression nodes should survive extraction unchanged."""
+    mod = tmp_path / "expression_exclusion_models.py"
+    mod.write_text(
+        textwrap.dedent(
+            """
+            from tortoise import fields, models
+
+            from tortoisemarch.constraints import (
+                ExclusionConstraint,
+                FieldRef,
+                RawSQL,
+            )
+
+            class Booking(models.Model):
+                practitioner = fields.ForeignKeyField(
+                    "models.Practitioner",
+                    related_name="bookings",
+                )
+                start_at = fields.DatetimeField()
+                end_at = fields.DatetimeField()
+
+                class Meta:
+                    tortoisemarch_constraints = (
+                        ExclusionConstraint(
+                            expressions=(
+                                (FieldRef("practitioner"), "="),
+                                (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                            ),
+                            name="booking_practitioner_window_excl",
+                            index_type="gist",
+                            condition="cancelled_at IS NULL",
+                        ),
+                    )
+
+            class Practitioner(models.Model):
+                id = fields.IntField(primary_key=True)
+            """,
+        ),
+    )
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        from expression_exclusion_models import Booking, Practitioner  # noqa: PLC0415
+
+        state = extract_project_state(
+            apps={"default": {"Booking": Booking, "Practitioner": Practitioner}},
+        )
+        ms = state.get_model("Booking")
+        assert ms.constraints == [
+            ConstraintState(
+                kind="exclude",
+                name="booking_practitioner_window_excl",
+                expressions=(
+                    (FieldRef("practitioner"), "="),
+                    (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                ),
                 index_type="gist",
                 condition="cancelled_at IS NULL",
             ),

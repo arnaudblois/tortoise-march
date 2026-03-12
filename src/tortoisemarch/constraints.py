@@ -12,41 +12,157 @@ EXCLUSION_EXPRESSION_PARTS = 2
 
 
 @dataclass(frozen=True)
+class FieldRef:
+    """Represent a schema field/column reference inside an exclusion expression.
+
+    We normalize these identifiers to lowercase because the rest of
+    TortoiseMarch already treats logical field names and physical column names
+    case-insensitively for diffing and replay.
+    """
+
+    name: str
+
+    def __post_init__(self) -> None:
+        """Normalize and validate the referenced field/column name."""
+        normalized = str(self.name).strip().lower()
+        if not normalized:
+            msg = "FieldRef requires a non-empty field or column name."
+            raise ValueError(msg)
+        object.__setattr__(self, "name", normalized)
+
+    def to_dict(self) -> dict[str, str]:
+        """Serialize the field reference to a stable plain dict."""
+        return {"type": "field_ref", "name": self.name}
+
+    def __repr__(self) -> str:
+        """Render a constructor-like repr for migration code readability."""
+        return f"FieldRef({self.name!r})"
+
+
+@dataclass(frozen=True)
+class RawSQL:
+    """Represent verbatim SQL inside an exclusion expression."""
+
+    sql: str
+
+    def __post_init__(self) -> None:
+        """Normalize and validate the raw SQL fragment."""
+        normalized = str(self.sql).strip()
+        if not normalized:
+            msg = "RawSQL requires a non-empty SQL fragment."
+            raise ValueError(msg)
+        object.__setattr__(self, "sql", normalized)
+
+    def to_dict(self) -> dict[str, str]:
+        """Serialize the SQL fragment to a stable plain dict."""
+        return {"type": "raw_sql", "sql": self.sql}
+
+    def __repr__(self) -> str:
+        """Render a constructor-like repr for migration code readability."""
+        return f"RawSQL({self.sql!r})"
+
+
+type ExclusionExpressionNode = FieldRef | RawSQL
+type ExclusionExpressionInput = str | FieldRef | RawSQL | dict[str, Any]
+type ExclusionExpression = tuple[ExclusionExpressionNode, str]
+
+
+def normalize_exclusion_expression_node(
+    value: ExclusionExpressionInput,
+) -> ExclusionExpressionNode:
+    """Normalize one exclusion-expression node.
+
+    Strings remain backwards-compatible and are treated as `FieldRef`.
+    Structured dict payloads are accepted so migrations/state files can round
+    trip without losing the node type.
+    """
+    if isinstance(value, (FieldRef, RawSQL)):
+        return value
+
+    if isinstance(value, str):
+        return FieldRef(value)
+
+    if isinstance(value, dict):
+        node_type = str(value.get("type") or "").strip().lower()
+        if node_type == "field_ref":
+            return FieldRef(value.get("name", ""))
+        if node_type == "raw_sql":
+            return RawSQL(value.get("sql", ""))
+        msg = f"Unsupported exclusion expression node type: {value!r}"
+        raise ValueError(msg)
+
+    msg = (
+        "Exclusion expressions support only strings, FieldRef, or RawSQL nodes. "
+        f"Got {value!r}."
+    )
+    raise ValueError(msg)
+
+
+def normalize_exclusion_expressions(
+    expressions: Any,
+    *,
+    error_context: str,
+) -> tuple[ExclusionExpression, ...]:
+    """Normalize exclusion expressions into typed `(node, operator)` pairs."""
+    normalized_expressions: list[ExclusionExpression] = []
+    for expression in expressions or ():
+        if isinstance(expression, dict):
+            node = normalize_exclusion_expression_node(expression.get("expression"))
+            operator = str(expression.get("operator", "")).strip()
+        else:
+            if not isinstance(expression, (tuple, list)) or (
+                len(expression) != EXCLUSION_EXPRESSION_PARTS
+            ):
+                msg = (
+                    f"{error_context} expressions must be "
+                    "(field_or_column, operator) pairs."
+                )
+                raise ValueError(msg)
+            node = normalize_exclusion_expression_node(expression[0])
+            operator = str(expression[1]).strip()
+        if not operator:
+            msg = f"{error_context} expressions cannot contain empty operators."
+            raise ValueError(msg)
+        normalized_expressions.append((node, operator))
+
+    if not normalized_expressions:
+        msg = f"{error_context} requires at least one expression."
+        raise ValueError(msg)
+
+    return tuple(normalized_expressions)
+
+
+def exclusion_expressions_to_dict(
+    expressions: tuple[ExclusionExpression, ...],
+) -> list[dict[str, Any]]:
+    """Serialize exclusion expressions into a structured plain-data payload."""
+    return [
+        {"expression": node.to_dict(), "operator": operator}
+        for node, operator in expressions
+    ]
+
+
+@dataclass(frozen=True)
 class ExclusionConstraint:
     """Describe a Postgres exclusion constraint for `Meta.tortoisemarch_constraints`.
 
-    Each expression is a `(field_or_column, operator)` pair. We intentionally
-    keep the API field-based because the rest of Tortoise March already knows
-    how to validate and normalize logical field names into physical columns.
+    Each expression is a `(node, operator)` pair where `node` is either:
+    - `FieldRef("field_name")` for normal identifier-style references
+    - `RawSQL("...")` for verbatim SQL expressions
+    - a plain string, kept as a backwards-compatible alias for `FieldRef`
     """
 
-    expressions: tuple[tuple[str, str], ...]
+    expressions: tuple[ExclusionExpression, ...]
     name: str | None = None
     index_type: str = "gist"
     condition: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize inputs so migration state is deterministic."""
-        normalized_expressions: list[tuple[str, str]] = []
-        for expression in self.expressions:
-            if not isinstance(expression, (tuple, list)) or (
-                len(expression) != EXCLUSION_EXPRESSION_PARTS
-            ):
-                msg = (
-                    "ExclusionConstraint expressions must be "
-                    "(field_or_column, operator) pairs."
-                )
-                raise ValueError(msg)
-            field_name = str(expression[0]).strip()
-            operator = str(expression[1]).strip()
-            if not field_name or not operator:
-                msg = "ExclusionConstraint expressions cannot contain empty values."
-                raise ValueError(msg)
-            normalized_expressions.append((field_name, operator))
-
-        if not normalized_expressions:
-            msg = "ExclusionConstraint requires at least one expression."
-            raise ValueError(msg)
+        normalized_expressions = normalize_exclusion_expressions(
+            self.expressions,
+            error_context="ExclusionConstraint",
+        )
 
         index_type = str(self.index_type).strip().lower()
         if not index_type:
@@ -66,7 +182,7 @@ class ExclusionConstraint:
         return {
             "type": "ExclusionConstraint",
             "name": self.name,
-            "expressions": [list(expression) for expression in self.expressions],
+            "expressions": exclusion_expressions_to_dict(self.expressions),
             "index_type": self.index_type,
             "condition": self.condition,
         }
@@ -77,7 +193,7 @@ class ExclusionConstraint:
             "tortoisemarch.constraints.ExclusionConstraint",
             [],
             {
-                "expressions": [list(expression) for expression in self.expressions],
+                "expressions": exclusion_expressions_to_dict(self.expressions),
                 "name": self.name,
                 "index_type": self.index_type,
                 "condition": self.condition,

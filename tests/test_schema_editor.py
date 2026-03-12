@@ -5,6 +5,7 @@ from enum import Enum
 import asyncpg
 import pytest
 
+from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.model_state import ConstraintState
 from tortoisemarch.operations import (
@@ -752,6 +753,33 @@ def test_sql_constraint_helpers_render_postgres_constraints():
     ) == (
         'ALTER TABLE "member" RENAME CONSTRAINT "member_email_uniq" '
         'TO "member_primary_email_uniq";'
+    )
+
+
+def test_sql_add_constraint_renders_exclusion_fieldrefs_and_raw_sql():
+    """Exclusion SQL should quote field refs and emit RawSQL verbatim."""
+    ed = PostgresSchemaEditor()
+
+    sql = ed.sql_add_constraint(
+        db_table="booking",
+        constraint=ConstraintState(
+            kind="exclude",
+            name="bookings_no_overlap_per_practitioner",
+            expressions=(
+                (FieldRef("practitioner"), "="),
+                (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+            ),
+            index_type="gist",
+            condition="status IN ('held', 'confirmed', 'completed', 'no_show')",
+        ),
+        field_column_map={"practitioner": "practitioner_id"},
+    )
+
+    assert (
+        sql == 'ALTER TABLE "booking" ADD CONSTRAINT '
+        '"bookings_no_overlap_per_practitioner" EXCLUDE USING gist '
+        "(\"practitioner_id\" WITH =, tstzrange(start_at, end_at, '[)') WITH &&) "
+        "WHERE (status IN ('held', 'confirmed', 'completed', 'no_show'));"
     )
 
 

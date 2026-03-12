@@ -11,6 +11,8 @@ This page documents the public surface we commit to for `0.1.x`.
 
 - `tortoisemarch.base.BaseMigration`
 - `tortoisemarch.ExclusionConstraint`
+- `tortoisemarch.FieldRef`
+- `tortoisemarch.RawSQL`
 - `tortoisemarch.operations.*` migration operation classes
 - `tortoisemarch.migrate.migrate`
 - `tortoisemarch.makemigrations.makemigrations`

@@ -1,5 +1,6 @@
 """Tests for ProjectState / ModelState serialization."""
 
+from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.model_state import (
     ConstraintKind,
     ConstraintState,
@@ -46,7 +47,10 @@ def test_model_state_round_trips_indexes_and_constraints():
                     ConstraintState(
                         kind="exclude",
                         name="book_room_timespan_excl",
-                        expressions=(("room", "="), ("timespan", "&&")),
+                        expressions=(
+                            (FieldRef("room"), "="),
+                            (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                        ),
                         index_type="gist",
                         condition="cancelled_at IS NULL",
                     ),

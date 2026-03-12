@@ -996,6 +996,7 @@ class AddConstraint(Operation):
     db_table: str
     constraint: ConstraintState | dict[str, Any]
     name: str | None = None
+    field_column_map: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.constraint = _constraint_from_payload(self.constraint)
@@ -1008,6 +1009,7 @@ class AddConstraint(Operation):
             conn,
             db_table=self.db_table,
             constraint=self.constraint,
+            field_column_map=self.field_column_map or None,
         )
 
     async def unapply(self, conn, schema_editor) -> None:
@@ -1025,6 +1027,7 @@ class AddConstraint(Operation):
             schema_editor.sql_add_constraint(
                 db_table=self.db_table,
                 constraint=self.constraint,
+                field_column_map=self.field_column_map or None,
             ),
         ]
 
@@ -1046,12 +1049,16 @@ class AddConstraint(Operation):
 
     def to_code(self) -> str:
         """Return Python code to recreate this operation."""
-        return (
+        base = (
             f"AddConstraint(model_name={self.model_name!r}, "
             f"db_table={self.db_table!r}, "
-            f"constraint={self.constraint.to_dict()!r}, "
-            f"name={self.name!r})"
+            f"constraint={self.constraint.to_code()}, "
+            f"name={self.name!r}"
         )
+        if self.field_column_map:
+            base += f", field_column_map={self.field_column_map!r}"
+        base += ")"
+        return base
 
 
 @dataclass
@@ -1118,7 +1125,7 @@ class RemoveConstraint(Operation):
         return (
             f"RemoveConstraint(model_name={self.model_name!r}, "
             f"db_table={self.db_table!r}, "
-            f"constraint={self.constraint.to_dict()!r}, "
+            f"constraint={self.constraint.to_code()}, "
             f"name={self.name!r})"
         )
 
@@ -1200,8 +1207,8 @@ class RenameConstraint(Operation):
             f"db_table={self.db_table!r}, "
             f"old_name={self.old_name!r}, "
             f"new_name={self.new_name!r}, "
-            f"old_constraint={self.old_constraint.to_dict()!r}, "
-            f"new_constraint={self.new_constraint.to_dict()!r})"
+            f"old_constraint={self.old_constraint.to_code()}, "
+            f"new_constraint={self.new_constraint.to_code()})"
         )
 
 

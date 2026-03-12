@@ -24,6 +24,7 @@ from tortoise import Tortoise
 from tortoise.exceptions import ConfigurationError
 
 from tortoisemarch.conf import resolve_runtime_config
+from tortoisemarch.constraints import FieldRef
 from tortoisemarch.differ import diff_states, score_candidate
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.extractor import extract_project_state
@@ -111,7 +112,11 @@ def _validate_index_columns(state: ProjectState) -> None:
                 _append_unknown_columns(
                     problems,
                     model_name=ms.name,
-                    columns=tuple(column for column, _ in constraint.expressions),
+                    columns=tuple(
+                        expression.name
+                        for expression, _ in constraint.expressions
+                        if isinstance(expression, FieldRef)
+                    ),
                     logical_names=logical_names,
                     physical_names=physical_names,
                 )

@@ -4,6 +4,7 @@ from enum import Enum
 
 import pytest
 
+from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.differ import diff_states
 from tortoisemarch.exceptions import NotReversibleMigrationError
 from tortoisemarch.model_state import (
@@ -723,9 +724,34 @@ def test_add_constraint_to_code_is_deterministic():
 
     assert (
         op.to_code() == "AddConstraint(model_name='Invoice', db_table='invoice', "
-        "constraint={'kind': 'check', 'name': 'invoice_total_check', "
-        "'check': 'total >= 0'}, name='invoice_total_check')"
+        "constraint=ConstraintState(kind='check', name='invoice_total_check', "
+        "check='total >= 0'), name='invoice_total_check')"
     )
+
+
+def test_add_constraint_to_code_renders_expression_nodes_readably():
+    """Exclusion constraints should keep FieldRef and RawSQL explicit in codegen."""
+    op = AddConstraint(
+        model_name="Booking",
+        db_table="booking",
+        constraint=ConstraintState(
+            kind="exclude",
+            name="booking_practitioner_window_excl",
+            expressions=(
+                (FieldRef("practitioner"), "="),
+                (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+            ),
+            index_type="gist",
+        ),
+        field_column_map={"practitioner": "practitioner_id"},
+    )
+
+    code = op.to_code()
+
+    assert "ConstraintState(" in code
+    assert "FieldRef('practitioner')" in code
+    assert "RawSQL(" in code
+    assert "'practitioner': 'practitioner_id'" in code
 
 
 def test_alter_field_to_code_orders_changed_opts():

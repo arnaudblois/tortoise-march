@@ -12,6 +12,7 @@ from typing import Any
 from tortoise import Model, Tortoise, fields
 from tortoise.fields.data import CharEnumFieldInstance, IntEnumFieldInstance
 
+from tortoisemarch.constraints import normalize_exclusion_expressions
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.model_state import (
     ConstraintKind,
@@ -360,38 +361,20 @@ def _coerce_check_expression(entry: Any, payload: dict[str, Any]) -> str:
 def _coerce_exclusion_expressions(
     entry: Any,
     payload: dict[str, Any],
-) -> tuple[tuple[str, str], ...]:
-    """Extract normalized `(field_or_column, operator)` pairs."""
+) -> tuple:
+    """Extract normalized typed exclusion-expression pairs."""
     raw_expressions = payload.get("expressions")
     if raw_expressions is None:
         raw_expressions = payload.get("fields")
 
-    expressions: list[tuple[str, str]] = []
-    for expression in raw_expressions or ():
-        if not isinstance(expression, (tuple, list)) or (
-            len(expression) != EXCLUSION_EXPRESSION_PARTS
-        ):
-            msg = (
-                "ExclusionConstraint expressions must be "
-                "(field_or_column, operator) pairs: "
-                f"{entry!r}"
-            )
-            raise InvalidMigrationError(msg)
-        field_name = str(expression[0]).strip().lower()
-        operator = str(expression[1]).strip()
-        if not field_name or not operator:
-            msg = (
-                "ExclusionConstraint expressions cannot contain empty values: "
-                f"{entry!r}"
-            )
-            raise InvalidMigrationError(msg)
-        expressions.append((field_name, operator))
-
-    if not expressions:
-        msg = f"ExclusionConstraint must define expressions: {entry!r}"
-        raise InvalidMigrationError(msg)
-
-    return tuple(expressions)
+    try:
+        return normalize_exclusion_expressions(
+            raw_expressions,
+            error_context=f"ExclusionConstraint {entry!r}",
+        )
+    except ValueError as error:
+        msg = str(error)
+        raise InvalidMigrationError(msg) from error
 
 
 def _constraint_state_from_meta_entry(entry: Any) -> ConstraintState:

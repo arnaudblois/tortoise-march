@@ -2,6 +2,7 @@
 
 import pytest
 
+from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.makemigrations import _validate_index_columns
 from tortoisemarch.model_state import (
@@ -99,7 +100,7 @@ def test_exclusion_constraint_columns_are_validated():
         constraints=[
             ConstraintState(
                 kind="exclude",
-                expressions=(("room", "="), ("resource", "&&")),
+                expressions=((FieldRef("room"), "="), (FieldRef("resource"), "&&")),
                 index_type="gist",
             ),
         ],
@@ -110,3 +111,35 @@ def test_exclusion_constraint_columns_are_validated():
         _validate_index_columns(state)
 
     assert "Booking.resource" in str(exc.value)
+
+
+def test_exclusion_constraint_raw_sql_is_ignored_by_column_validation():
+    """RawSQL exclusion expressions should bypass field-name validation."""
+    ms = ModelState(
+        name="Booking",
+        db_table="booking",
+        field_states={
+            "practitioner": FieldState(
+                name="practitioner",
+                field_type="ForeignKeyFieldInstance",
+                related_table="practitioner",
+                referenced_type="IntField",
+                to_field="id",
+            ),
+            "start_at": FieldState(name="start_at", field_type="DatetimeField"),
+            "end_at": FieldState(name="end_at", field_type="DatetimeField"),
+        },
+        constraints=[
+            ConstraintState(
+                kind="exclude",
+                expressions=(
+                    (FieldRef("practitioner"), "="),
+                    (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                ),
+                index_type="gist",
+            ),
+        ],
+    )
+    state = ProjectState(model_states={"Booking": ms})
+
+    _validate_index_columns(state)

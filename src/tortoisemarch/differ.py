@@ -24,6 +24,7 @@ from difflib import SequenceMatcher
 from enum import Enum
 from typing import Any
 
+from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.model_state import (
     ConstraintKind,
@@ -250,22 +251,17 @@ def _normalize_constraint_state(
             columns=_physical_index_columns(ms, tuple(constraint.columns)),
         )
     if constraint.kind == ConstraintKind.EXCLUDE:
-        physical_columns = _physical_index_columns(
-            ms,
-            tuple(column for column, _ in constraint.expressions),
-        )
-        expressions = tuple(
-            (column, operator)
-            for column, (_, operator) in zip(
-                physical_columns,
-                constraint.expressions,
-                strict=True,
-            )
-        )
+        expressions: list[tuple[FieldRef | RawSQL, str]] = []
+        for expression, operator in constraint.expressions:
+            if isinstance(expression, FieldRef):
+                physical_column = _physical_index_columns(ms, (expression.name,))[0]
+                expressions.append((FieldRef(physical_column), operator))
+            else:
+                expressions.append((expression, operator))
         return ConstraintState(
             kind=ConstraintKind.EXCLUDE,
             name=constraint.name,
-            expressions=expressions,
+            expressions=tuple(expressions),
             index_type=constraint.index_type,
             condition=constraint.condition,
         )
@@ -295,6 +291,17 @@ def _physical_index_columns(ms: ModelState, cols: tuple[str, ...]) -> tuple[str,
         else:
             physical.append(col)
     return tuple(physical)
+
+
+def _field_column_map(ms: ModelState) -> dict[str, str]:
+    """Return a stable logical-field to physical-column mapping for one model."""
+    mapping: dict[str, str] = {}
+    for field_state in _schema_fields(ms).values():
+        mapping[field_state.name.lower()] = _physical_index_columns(
+            ms,
+            (field_state.name,),
+        )[0]
+    return mapping
 
 
 def _rename_pairs_for_model_indexes(
@@ -863,18 +870,24 @@ def _diff_model_constraints(
     model_name: str,
 ) -> None:
     """Append constraint operations to transform old_model constraints -> new_model."""
-    old_groups: dict[tuple[Any, ...], list[ConstraintState]] = defaultdict(list)
-    new_groups: dict[tuple[Any, ...], list[ConstraintState]] = defaultdict(list)
+    old_groups: dict[tuple[Any, ...], list[tuple[ConstraintState, ConstraintState]]] = (
+        defaultdict(list)
+    )
+    new_groups: dict[tuple[Any, ...], list[tuple[ConstraintState, ConstraintState]]] = (
+        defaultdict(list)
+    )
 
-    for constraint in _model_constraints(old_model):
-        old_groups[constraint.semantic_key].append(constraint)
-    for constraint in _model_constraints(new_model):
-        new_groups[constraint.semantic_key].append(constraint)
+    for constraint in old_model.constraints:
+        normalized = _normalize_constraint_state(old_model, constraint)
+        old_groups[normalized.semantic_key].append((normalized, constraint))
+    for constraint in new_model.constraints:
+        normalized = _normalize_constraint_state(new_model, constraint)
+        new_groups[normalized.semantic_key].append((normalized, constraint))
 
     for group in old_groups.values():
-        group.sort(key=lambda value: constraint_db_name(old_model.db_table, value))
+        group.sort(key=lambda value: constraint_db_name(old_model.db_table, value[0]))
     for group in new_groups.values():
-        group.sort(key=lambda value: constraint_db_name(new_model.db_table, value))
+        group.sort(key=lambda value: constraint_db_name(new_model.db_table, value[0]))
 
     all_keys = sorted(set(old_groups) | set(new_groups))
     for key in all_keys:
@@ -883,10 +896,10 @@ def _diff_model_constraints(
         shared = min(len(old_group), len(new_group))
 
         for index in range(shared):
-            old_constraint = old_group[index]
-            new_constraint = new_group[index]
-            old_name = constraint_db_name(old_model.db_table, old_constraint)
-            new_name = constraint_db_name(new_model.db_table, new_constraint)
+            old_normalized, old_constraint = old_group[index]
+            new_normalized, new_constraint = new_group[index]
+            old_name = constraint_db_name(old_model.db_table, old_normalized)
+            new_name = constraint_db_name(new_model.db_table, new_normalized)
             if old_name != new_name:
                 ops.append(
                     RenameConstraint(
@@ -904,9 +917,9 @@ def _diff_model_constraints(
                 model_name=model_name,
                 db_table=new_model.db_table,
                 constraint=constraint,
-                name=constraint_db_name(old_model.db_table, constraint),
+                name=constraint_db_name(old_model.db_table, normalized_constraint),
             )
-            for constraint in old_group[shared:]
+            for normalized_constraint, constraint in old_group[shared:]
         )
 
         ops.extend(
@@ -914,9 +927,10 @@ def _diff_model_constraints(
                 model_name=model_name,
                 db_table=new_model.db_table,
                 constraint=constraint,
-                name=constraint_db_name(new_model.db_table, constraint),
+                name=constraint_db_name(new_model.db_table, normalized_constraint),
+                field_column_map=_field_column_map(new_model),
             )
-            for constraint in new_group[shared:]
+            for normalized_constraint, constraint in new_group[shared:]
         )
 
 

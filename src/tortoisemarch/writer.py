@@ -177,8 +177,17 @@ def write_migration(
         filename = _auto_name(operations=operations, number=number)
     path = migrations_dir / filename
 
+    op_codes = [op.to_code() for op in operations]
+
     # Build import list dynamically from operations
     import_classes = sorted({op.__class__.__name__ for op in operations})
+    if any(
+        op.__class__.__name__
+        in {"AddConstraint", "RemoveConstraint", "RenameConstraint"}
+        for op in operations
+    ):
+        import_classes.append("ConstraintState")
+        import_classes = sorted(set(import_classes))
     include_runpython_stub = empty and not operations
     if include_runpython_stub:
         import_classes.append("RunPython")
@@ -192,6 +201,8 @@ def write_migration(
         import_lines.append(
             f"from tortoisemarch.operations import {', '.join(import_classes)}",
         )
+    if any("FieldRef(" in code or "RawSQL(" in code for code in op_codes):
+        import_lines.append("from tortoisemarch.constraints import FieldRef, RawSQL")
     import_block = "\n".join(import_lines)
 
     # Build operations block
@@ -213,7 +224,7 @@ def write_migration(
 
     else:
         func_block = ""
-        lines = [f"        {op.to_code()}," for op in operations]
+        lines = [f"        {code}," for code in op_codes]
         ops_block = (
             "operations: ClassVar[list] = [\n"
             + ("\n".join(lines) + "\n" if lines else "")

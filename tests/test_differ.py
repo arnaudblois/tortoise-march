@@ -1,5 +1,6 @@
 """Test suite for diff_states."""
 
+from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.differ import diff_states
 from tortoisemarch.model_state import (
     ConstraintState,
@@ -593,6 +594,99 @@ def test_exclusion_constraints_emit_add_remove_and_rename():
     ops_changed = diff_states(new, changed)
     assert any(isinstance(op, RemoveConstraint) for op in ops_changed)
     assert any(isinstance(op, AddConstraint) for op in ops_changed)
+
+
+def test_exclusion_constraints_keep_typed_nodes_and_field_column_map():
+    """AddConstraint should preserve typed expressions and FK column resolution."""
+    new = project(
+        {
+            "Booking": model(
+                "Booking",
+                [
+                    (
+                        "practitioner",
+                        "ForeignKeyFieldInstance",
+                        {
+                            "related_table": "practitioner",
+                            "referenced_type": "IntField",
+                            "to_field": "id",
+                        },
+                    ),
+                    ("start_at", "DatetimeField", {}),
+                    ("end_at", "DatetimeField", {}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="exclude",
+                        name="booking_practitioner_window_excl",
+                        expressions=(
+                            (FieldRef("practitioner"), "="),
+                            (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                        ),
+                        index_type="gist",
+                        condition="cancelled_at IS NULL",
+                    ),
+                ],
+            ),
+        },
+    )
+
+    ops = diff_states(project({}), new)
+
+    adds = [op for op in ops if isinstance(op, AddConstraint)]
+    assert len(adds) == 1
+    assert adds[0].constraint.expressions == (
+        (FieldRef("practitioner"), "="),
+        (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+    )
+    assert adds[0].field_column_map["practitioner"] == "practitioner_id"
+
+
+def test_exclusion_constraints_treat_strings_and_fieldrefs_as_equivalent():
+    """Legacy string expressions should compare equal to FieldRef expressions."""
+    old = project(
+        {
+            "Booking": model(
+                "Booking",
+                [
+                    ("room", "IntField", {}),
+                    ("timespan", "CharField", {"max_length": 255}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="exclude",
+                        name="booking_room_timespan_excl",
+                        expressions=(("room", "="), ("timespan", "&&")),
+                        index_type="gist",
+                    ),
+                ],
+            ),
+        },
+    )
+    new = project(
+        {
+            "Booking": model(
+                "Booking",
+                [
+                    ("room", "IntField", {}),
+                    ("timespan", "CharField", {"max_length": 255}),
+                ],
+                constraints=[
+                    ConstraintState(
+                        kind="exclude",
+                        name="booking_room_timespan_excl",
+                        expressions=(
+                            (FieldRef("room"), "="),
+                            (FieldRef("timespan"), "&&"),
+                        ),
+                        index_type="gist",
+                    ),
+                ],
+            ),
+        },
+    )
+
+    assert diff_states(old, new) == []
 
 
 def test_unique_together_becomes_constraint_not_unique_index():

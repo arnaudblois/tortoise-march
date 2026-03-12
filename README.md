@@ -270,28 +270,49 @@ Use TortoiseMarch's helper instead of Tortoise ORM's unsupported API surface:
 
 ```python
 from tortoise import fields, models
-from tortoisemarch.constraints import ExclusionConstraint
+from tortoisemarch.constraints import ExclusionConstraint, FieldRef, RawSQL
 
 
 class Booking(models.Model):
-    room = fields.IntField()
-    timespan = fields.CharField(max_length=255)
+    practitioner = fields.ForeignKeyField(
+        "models.Practitioner",
+        related_name="bookings",
+    )
+    start_at = fields.DatetimeField()
+    end_at = fields.DatetimeField()
 
     class Meta:
         tortoisemarch_constraints = (
             ExclusionConstraint(
-                expressions=(("room", "="), ("timespan", "&&")),
-                name="booking_room_timespan_excl",
+                expressions=(
+                    (FieldRef("practitioner"), "="),
+                    (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                ),
+                name="bookings_no_overlap_per_practitioner",
                 index_type="gist",
-                condition="cancelled_at IS NULL",
+                condition="status IN ('held', 'confirmed', 'completed', 'no_show')",
             ),
         )
 ```
 
-`expressions` is a tuple of `(field_or_column, operator)` pairs. Tortoise March
-validates the referenced field or column names against the extracted model
+The referenced model can be any normal Tortoise model, for example:
+
+```python
+class Practitioner(models.Model):
+    id = fields.IntField(primary_key=True)
+```
+
+`expressions` is a tuple of `(expression_node, operator)` pairs where the node is
+one of:
+
+- `FieldRef("practitioner")` for normal field/column references
+- `RawSQL("tstzrange(start_at, end_at, '[)')")` for verbatim SQL expressions
+- a plain string like `"room"` for backwards-compatible field refs
+
+Tortoise March validates `FieldRef(...)` names against the extracted model
 schema, resolves logical field names to physical database columns when needed,
-and renders PostgreSQL `EXCLUDE USING ...` DDL during migration.
+and renders PostgreSQL `EXCLUDE USING ...` DDL during migration. `RawSQL(...)`
+is emitted verbatim and is not introspected further.
 
 #### What Tortoise March Does With Constraints
 

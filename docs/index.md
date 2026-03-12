@@ -237,29 +237,48 @@ Define exclusion constraints on `Meta.tortoisemarch_constraints`:
 
 ```python
 from tortoise import fields, models
-from tortoisemarch.constraints import ExclusionConstraint
+from tortoisemarch.constraints import ExclusionConstraint, FieldRef, RawSQL
 
 
 class Booking(models.Model):
-    room = fields.IntField()
-    timespan = fields.CharField(max_length=255)
+    practitioner = fields.ForeignKeyField(
+        "models.Practitioner",
+        related_name="bookings",
+    )
+    start_at = fields.DatetimeField()
+    end_at = fields.DatetimeField()
 
     class Meta:
         tortoisemarch_constraints = (
             ExclusionConstraint(
-                expressions=(("room", "="), ("timespan", "&&")),
-                name="booking_room_timespan_excl",
+                expressions=(
+                    (FieldRef("practitioner"), "="),
+                    (RawSQL("tstzrange(start_at, end_at, '[)')"), "&&"),
+                ),
+                name="bookings_no_overlap_per_practitioner",
                 index_type="gist",
-                condition="cancelled_at IS NULL",
+                condition="status IN ('held', 'confirmed', 'completed', 'no_show')",
             ),
         )
 ```
 
-`expressions` is a tuple of `(field_or_column, operator)` pairs.
+The referenced model can be any normal Tortoise model, for example:
 
-Tortoise March validates those field names against the extracted model state,
-resolves logical names to physical database column names, and renders PostgreSQL
-`EXCLUDE USING ...` DDL in migrations.
+```python
+class Practitioner(models.Model):
+    id = fields.IntField(primary_key=True)
+```
+
+`expressions` is a tuple of `(expression_node, operator)` pairs. We support:
+
+- `FieldRef("field_name")` for identifier-style field/column references
+- `RawSQL("...")` for verbatim SQL expressions
+- plain strings as a backwards-compatible shorthand for `FieldRef(...)`
+
+Tortoise March validates `FieldRef(...)` names against the extracted model
+state, resolves logical names to physical database column names, and renders
+PostgreSQL `EXCLUDE USING ...` DDL in migrations. `RawSQL(...)` is emitted
+verbatim and is not introspected further.
 
 ### What Tortoise March Does
 

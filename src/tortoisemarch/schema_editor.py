@@ -21,6 +21,7 @@ from typing import Any
 
 from tortoise import BaseDBAsyncClient
 
+from tortoisemarch.constraints import FieldRef, RawSQL
 from tortoisemarch.exceptions import InvalidMigrationError
 from tortoisemarch.model_state import ConstraintKind, ConstraintState
 from tortoisemarch.operations import constraint_db_name, default_index_name
@@ -218,7 +219,12 @@ class SchemaEditor(ABC):
         """Rename an index."""
 
     @abstractmethod
-    def sql_add_constraint(self, db_table: str, constraint: ConstraintState) -> str:
+    def sql_add_constraint(
+        self,
+        db_table: str,
+        constraint: ConstraintState,
+        field_column_map: dict[str, str] | None = None,
+    ) -> str:
         """Return SQL to add a model-level constraint."""
 
     @abstractmethod
@@ -240,6 +246,7 @@ class SchemaEditor(ABC):
         conn: BaseDBAsyncClient,
         db_table: str,
         constraint: ConstraintState,
+        field_column_map: dict[str, str] | None = None,
     ) -> None:
         """Create a model-level constraint."""
 
@@ -370,6 +377,7 @@ class PostgresSchemaEditor(SchemaEditor):
         self,
         db_table: str,
         constraint: ConstraintState,
+        field_column_map: dict[str, str] | None = None,
     ) -> str:
         """Render the body of a Postgres model-level constraint definition."""
         if constraint.kind == ConstraintKind.UNIQUE:
@@ -384,9 +392,25 @@ class PostgresSchemaEditor(SchemaEditor):
                 f"CHECK ({constraint.check})"
             )
         if constraint.kind == ConstraintKind.EXCLUDE:
+            rendered_expressions: list[str] = []
+            for expression, operator in constraint.expressions:
+                if isinstance(expression, FieldRef):
+                    column_name = (field_column_map or {}).get(
+                        expression.name,
+                        expression.name,
+                    )
+                    rendered = self._q_ident(column_name)
+                elif isinstance(expression, RawSQL):
+                    rendered = expression.sql
+                else:
+                    msg = (
+                        "Unsupported exclusion expression node in ConstraintState: "
+                        f"{expression!r}"
+                    )
+                    raise InvalidMigrationError(msg)
+                rendered_expressions.append(f"{rendered} WITH {operator}")
             expressions = ", ".join(
-                f"{self._q_ident(column)} WITH {operator}"
-                for column, operator in constraint.expressions
+                rendered_expressions,
             )
             sql = (
                 f"CONSTRAINT {self._q_ident(constraint_db_name(db_table, constraint))} "
@@ -767,11 +791,21 @@ class PostgresSchemaEditor(SchemaEditor):
             f"RENAME TO {self._q_ident(new_name)};"
         )
 
-    def sql_add_constraint(self, db_table: str, constraint: ConstraintState) -> str:
+    def sql_add_constraint(
+        self,
+        db_table: str,
+        constraint: ConstraintState,
+        field_column_map: dict[str, str] | None = None,
+    ) -> str:
         """Return SQL to add a model-level constraint."""
+        rendered_constraint = self._render_constraint_sql(
+            db_table,
+            constraint,
+            field_column_map,
+        )
         return (
             f"ALTER TABLE {self._q_ident(db_table.lower())} "
-            f"ADD {self._render_constraint_sql(db_table, constraint)};"
+            f"ADD {rendered_constraint};"
         )
 
     def sql_drop_constraint(self, db_table: str, name: str) -> str:
@@ -923,9 +957,14 @@ class PostgresSchemaEditor(SchemaEditor):
         conn: BaseDBAsyncClient,
         db_table: str,
         constraint: ConstraintState,
+        field_column_map: dict[str, str] | None = None,
     ) -> None:
         """Execute SQL to add a model-level constraint."""
-        sql = self.sql_add_constraint(db_table=db_table, constraint=constraint)
+        sql = self.sql_add_constraint(
+            db_table=db_table,
+            constraint=constraint,
+            field_column_map=field_column_map,
+        )
         await self._execute(conn, sql)
 
     async def drop_constraint(
