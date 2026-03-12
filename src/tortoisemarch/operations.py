@@ -54,6 +54,49 @@ def _sanitize_options_for_code(opts: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _field_type_from_options(options: dict[str, Any]) -> str | None:
+    """Return the abstract field type encoded in an AlterField payload."""
+    field_type = options.get("type")
+    if field_type is None:
+        return None
+    return str(field_type)
+
+
+def _alter_field_type_change_supported(
+    old_options: dict[str, Any],
+    new_options: dict[str, Any],
+) -> bool:
+    """Return whether the schema editor supports this type transition."""
+    old_type = _field_type_from_options(old_options)
+    new_type = _field_type_from_options(new_options)
+
+    if old_type is None or new_type is None or old_type == new_type:
+        return True
+
+    int_rank = {"SmallIntField": 0, "IntField": 1, "BigIntField": 2}
+    if old_type in int_rank and new_type in int_rank:
+        return int_rank[new_type] > int_rank[old_type]
+
+    return old_type == "CharField" and new_type == "TextField"
+
+
+def _raise_if_reverse_type_change_unsupported(
+    old_options: dict[str, Any],
+    new_options: dict[str, Any],
+) -> None:
+    """Refuse rollback when reversing the stored type transition is unsafe."""
+    if _alter_field_type_change_supported(new_options, old_options):
+        return
+
+    old_type = _field_type_from_options(old_options) or "<unknown>"
+    new_type = _field_type_from_options(new_options) or "<unknown>"
+    msg = (
+        "AlterField cannot be reversed automatically because the type change "
+        f"from {old_type} to {new_type} is not supported in reverse."
+    )
+    raise NotReversibleMigrationError(msg)
+
+
 def _prune_options_for_field_type(
     field_type: str,
     options: dict[str, Any],
@@ -502,6 +545,7 @@ class AlterField(Operation):
 
     async def unapply(self, conn, schema_editor) -> None:
         """Revert the alterations (and optional rename) on the column."""
+        _raise_if_reverse_type_change_unsupported(self.old_options, self.new_options)
         await schema_editor.alter_field(
             conn,
             self.db_table,
@@ -525,6 +569,7 @@ class AlterField(Operation):
     async def to_sql_unapply(self, conn, schema_editor) -> list[str]:
         """Return SQL to reverse the column alterations."""
         _ = conn
+        _raise_if_reverse_type_change_unsupported(self.old_options, self.new_options)
         return schema_editor.sql_alter_field(
             self.db_table,
             self.new_name or self.field_name,
@@ -679,10 +724,20 @@ class RenameField(Operation):
         old_key = _lc(self.old_name)
         fs = model.field_states.pop(old_key)
         new_key = _lc(self.new_name)
+        new_options = dict(fs.options)
+        if self.new_db_column is not None:
+            new_options["db_column"] = self.new_db_column
+        elif (
+            self.old_db_column is not None
+            and new_options.get("db_column") == self.old_db_column
+        ):
+            # We clear the override when the rename returns to the field's default
+            # physical column name, otherwise replay keeps diffing forever.
+            new_options.pop("db_column", None)
         model.field_states[new_key] = FieldState(
             name=self.new_name,
             field_type=fs.field_type,
-            **dict(fs.options),
+            **new_options,
         )
 
     def to_code(self) -> str:

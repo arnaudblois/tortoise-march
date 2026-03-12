@@ -144,6 +144,14 @@ async def test_irreversible_operations_raise_not_reversible_error():
         RemoveModel(name="Foo", db_table="foo"),
         RemoveField(model_name="Foo", db_table="foo", field_name="bar"),
         RemoveIndex(model_name="Foo", db_table="foo", name="foo_bar_idx"),
+        AlterField(
+            model_name="Foo",
+            db_table="foo",
+            field_name="bar",
+            old_options={"type": "CharField", "max_length": 255},
+            new_options={"type": "TextField"},
+            new_name="body",
+        ),
         RunPython(lambda: None),
     ]
 

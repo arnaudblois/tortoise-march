@@ -2,7 +2,10 @@
 
 from enum import Enum
 
+import pytest
+
 from tortoisemarch.differ import diff_states
+from tortoisemarch.exceptions import NotReversibleMigrationError
 from tortoisemarch.model_state import (
     ConstraintState,
     FieldState,
@@ -162,6 +165,58 @@ def test_rename_field_mutates_state():
     assert "name" not in fields
     assert "full_name" in fields
     assert fields["full_name"].field_type == "CharField"
+
+
+def test_rename_field_mutates_state_updates_db_column_and_avoids_replay_churn():
+    """RenameField should carry the destination db_column into replayed state."""
+    fields = {
+        "db_column": "author_id",
+        "null": False,
+        "related_table": "author",
+        "to_field": "id",
+        "on_delete": "CASCADE",
+    }
+    replayed = ProjectState(
+        model_states={
+            "Book": model(
+                "Book",
+                [("author", "ForeignKeyFieldInstance", fields)],
+                db_table="book",
+            ),
+        },
+    )
+    RenameField(
+        model_name="Book",
+        db_table="book",
+        old_name="author",
+        new_name="writer",
+        old_db_column="author_id",
+        new_db_column="writer_id",
+    ).mutate_state(replayed)
+
+    fields = replayed.model_states["Book"].field_states
+    fs = fields["writer"]
+    assert fs.name == "writer"
+    assert fs.db_column == "writer_id"
+    fields = {
+        "db_column": "writer_id",
+        "null": False,
+        "related_table": "author",
+        "to_field": "id",
+        "on_delete": "CASCADE",
+    }
+    current = ProjectState(
+        model_states={
+            "Book": model(
+                "Book",
+                [("writer", "ForeignKeyFieldInstance", fields)],
+                db_table="book",
+            ),
+        },
+    )
+
+    ops = diff_states(replayed, current)
+    assert not any(isinstance(op, AlterField) for op in ops)
 
 
 # ---------------- Extra coverage for tricky paths ----------------
@@ -469,6 +524,24 @@ async def test_runpython_accepts_three_arg_callable():
         "schema_editor": "schema_editor",
         "apps": marker,
     }
+
+
+async def test_alter_field_text_widening_rename_is_not_reversible():
+    """We reject rollback previews that would silently keep the widened type."""
+    op = AlterField(
+        model_name="Book",
+        db_table="book",
+        field_name="author",
+        old_options={"type": "CharField", "max_length": 255, "null": False},
+        new_options={"type": "TextField", "null": False},
+        new_name="book_author",
+    )
+
+    with pytest.raises(NotReversibleMigrationError):
+        await op.unapply(None, PostgresSchemaEditor())
+
+    with pytest.raises(NotReversibleMigrationError):
+        await op.to_sql_unapply(conn=None, schema_editor=PostgresSchemaEditor())
 
 
 async def test_createindex_and_removeindex_to_code_and_mutation():
