@@ -7,12 +7,10 @@ on:
   release:
     types: [published]
 
-permissions:
-  contents: write # needed for mkdocs gh-deploy
-  id-token: write # keep if you later switch to OIDC for PyPI
-
 jobs:
   test:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
 
     services:
@@ -46,6 +44,8 @@ jobs:
         run: poetry run pytest -q
 
   docs_build:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
 
     steps:
@@ -70,6 +70,8 @@ jobs:
   docs_deploy:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: docs_build
+    permissions:
+      contents: write # needed for mkdocs gh-deploy
     runs-on: ubuntu-latest
 
     steps:
@@ -97,6 +99,9 @@ jobs:
   publish_testpypi:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [test, docs_deploy]
+    # We keep TestPyPI on token auth so the dev upload path stays independent.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
 
     steps:
@@ -131,6 +136,11 @@ jobs:
   publish_pypi:
     if: github.event_name == 'release' && github.event.action == 'published'
     needs: [test, docs_build]
+    # We bind this job to the PyPI environment so the trusted publisher can match the OIDC claims.
+    permissions:
+      contents: read
+      id-token: write
+    environment: pypi
     runs-on: ubuntu-latest
 
     steps:
@@ -162,5 +172,4 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist
