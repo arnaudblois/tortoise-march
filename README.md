@@ -450,7 +450,10 @@ Tests include both unit-level operations and real database integration using asy
 
 ## Release Process
 
-PyPI publishing is automated via GitHub Actions.
+PyPI publishing is automated via GitHub Actions using trusted publishing.
+Before the first release, add GitHub Actions trusted publishers on PyPI and
+TestPyPI for this repository and the `ci.yml` workflow.
+No PyPI API tokens are required.
 
 1. Update the package version in `pyproject.toml` (for example `0.1.0`).
 2. Merge that version change to `main`.
@@ -466,6 +469,9 @@ git push origin v0.1.0
 Publishing happens on the `release.published` event (not on tag push alone).
 The workflow verifies that the release tag matches the package version in
 `pyproject.toml` (both `0.1.0` and `v0.1.0` are accepted).
+
+If you later add a GitHub Actions environment for publishing, register the same
+environment name in PyPI so the OIDC claims continue to match.
 
 ---
 
